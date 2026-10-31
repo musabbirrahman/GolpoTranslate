@@ -1,0 +1,37 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --bg-canvas: #FAF8F5;
+    --bg-surface: #F3EFEA;
+    --text-ink: #1C1917;
+    --text-muted: #57534E;
+    --border-hairline: #E5E0D8;
+    --accent-primary: #9A3412;
+  }
+
+  body {
+    background-color: #FAF8F5;
+    color: #1C1917;
+    font-feature-settings: "kern" 1, "liga" 1;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+.font-bangla {
+  font-family: var(--font-noto-serif-bengali), serif;
+  line-height: 1.85;
+}
+
+.font-display {
+  font-family: var(--font-cormorant), Georgia, serif;
+}
+
+.font-sans-ui {
+  font-family: var(--font-jakarta), system-ui, sans-serif;
+}
+
+.font-mono-num {
+  font-family: var(--font-jetbrains-mono), monospace;
+  font-variant-numeric: tabular-nums;
+}

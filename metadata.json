@@ -1,0 +1,6 @@
+{
+  "name": "GolpoTranslate",
+  "description": "An adaptive AI literary translation studio for translating English stories and novels into natural, expressive Bangla while preserving the author's unique literary voice.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
