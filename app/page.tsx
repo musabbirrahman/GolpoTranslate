@@ -25,7 +25,7 @@ import {
   saveAppSettings,
   saveProject,
 } from '@/lib/storage';
-import { chunkTextByParagraphs, splitIntoParagraphs } from '@/lib/chunker';
+import { alignParagraphs, chunkTextByParagraphs } from '@/lib/chunker';
 import type { SamplePassage } from '@/lib/sample-passages';
 
 export default function GolpoTranslateApp() {
@@ -108,7 +108,6 @@ export default function GolpoTranslateApp() {
 
   const handleQuickCreateFromSample = async (sample: SamplePassage) => {
     const now = new Date().toISOString();
-    const paragraphs = splitIntoParagraphs(sample.text);
     const chunks = chunkTextByParagraphs(sample.text, settings.maxWordsPerChunk);
 
     const newProject: TranslationProject = {
@@ -132,11 +131,7 @@ export default function GolpoTranslateApp() {
           title: sample.chapterTitle,
           originalText: sample.text,
           translatedText: '',
-          paragraphs: paragraphs.map((eng, idx) => ({
-            index: idx,
-            englishText: eng,
-            banglaText: '',
-          })),
+          paragraphs: alignParagraphs(sample.text, ''),
           status: 'pending',
           currentStage: 0,
           stageCompleted: {

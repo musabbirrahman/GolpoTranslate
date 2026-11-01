@@ -36,13 +36,22 @@ import type {
 } from '@/lib/types';
 import {
   alignParagraphs,
+  applyContinuousBanglaEdit,
+  applyStage4EditsToParagraphs,
   assembleTranslatedChunks,
+  canEditContinuousBangla,
   chunkTextByParagraphs,
   countWords,
   formatBilingualExport,
   formatChapterExport,
   formatFullStoryExport,
+  getPipelineCompletionState,
+  joinParagraphsWithSceneBreaks,
+  mergeStage3ChunkProgress,
+  resolveVerificationIssue,
+  revertParagraphTranslation,
   splitIntoParagraphs,
+  updateParagraphTranslation,
 } from '@/lib/chunker';
 import VoiceAndControlsPanel from './VoiceAndControlsPanel';
 import ContextAndMemoryPanel from './ContextAndMemoryPanel';
@@ -105,6 +114,7 @@ export default function WorkspaceView({
   // Stage execution states
   const [runningStage, setRunningStage] = useState<0 | 1 | 2 | 3 | 4 | 5>(0);
   const [pipelineBanner, setPipelineBanner] = useState<string | null>(null);
+  const [pipelineBannerTone, setPipelineBannerTone] = useState<'success' | 'warning'>('success');
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [saveToast, setSaveToast] = useState(false);
 
@@ -291,7 +301,10 @@ export default function WorkspaceView({
     }
 
     setErrorBanner(null);
+    setPipelineBannerTone('success');
     setRunningStage(3);
+
+    const preStage3Pairs = ch.paragraphs;
 
     const chunks = chunkTextByParagraphs(
       ch.originalText,
@@ -300,6 +313,7 @@ export default function WorkspaceView({
     );
 
     const translatedChunks: string[][] = [];
+    let prevChunkLastBangla = '';
 
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
@@ -327,32 +341,43 @@ export default function WorkspaceView({
         throw new Error(data.error || `Failed on chunk ${i + 1} of ${chunks.length}`);
       }
 
-      translatedChunks.push(data.translatedParagraphs || []);
+      const rawChunkOutput: string[] = Array.isArray(data.translatedParagraphs)
+        ? data.translatedParagraphs
+        : [];
+      translatedChunks.push(rawChunkOutput);
 
-      // Update partial chunk progress so partial progress is always recoverable
-      const partial = assembleTranslatedChunks(
-        englishParagraphs.slice(0, chunk.endParagraphIndex + 1),
-        translatedChunks
-      );
-      updateChapterInProject(currentProj, ch.id, (existing) => ({
-        ...existing,
-        status: 'in_progress',
-        currentStage: 3,
-        chunkCount: chunks.length,
-        completedChunks: i + 1,
-        translatedText: partial.fullBanglaText,
-        paragraphs: englishParagraphs.map((eng, pIdx) => ({
-          index: pIdx,
-          englishText: eng,
-          banglaText: partial.pairs[pIdx]?.banglaText || existing.paragraphs[pIdx]?.banglaText || '',
-        })),
-        updatedAt: new Date().toISOString(),
-      }));
+      // Update partial chunk progress strictly within active chunk bounds [chunk.startParagraphIndex .. chunk.endParagraphIndex]
+      // while preserving existing translations and refinement metadata outside the active chunk
+      // and passing prevChunkLastBangla so echoed boundary paragraphs are stripped immediately.
+      let nextChunkLastBangla = prevChunkLastBangla;
+      updateChapterInProject(projectRef.current, ch.id, (existing) => {
+        const partial = mergeStage3ChunkProgress(
+          englishParagraphs,
+          existing.paragraphs,
+          chunk,
+          rawChunkOutput,
+          prevChunkLastBangla
+        );
+        nextChunkLastBangla = partial.lastNonEmptyBangla;
+        return {
+          ...existing,
+          status: 'in_progress',
+          currentStage: 3,
+          chunkCount: chunks.length,
+          completedChunks: i + 1,
+          translatedText: partial.fullBanglaText,
+          paragraphs: partial.pairs,
+          updatedAt: new Date().toISOString(),
+        };
+      });
+      prevChunkLastBangla = nextChunkLastBangla;
     }
 
-    const { pairs, fullBanglaText } = assembleTranslatedChunks(
+    const { pairs, fullBanglaText, missingIndices } = assembleTranslatedChunks(
       englishParagraphs,
-      translatedChunks
+      translatedChunks,
+      chunks,
+      preStage3Pairs
     );
 
     const updatedProj = updateChapterInProject(projectRef.current, ch.id, (existing) => ({
@@ -374,7 +399,10 @@ export default function WorkspaceView({
       chapterId: ch.id,
       chapterTitle: ch.title,
       actionType: 'stage_3_translation',
-      summary: `Translated ${englishParagraphs.length} paragraphs across ${chunks.length} chunk(s) into literary Bangla.`,
+      summary:
+        missingIndices.length > 0
+          ? `Translated ${englishParagraphs.length - missingIndices.length}/${englishParagraphs.length} paragraphs across ${chunks.length} chunk(s) (${missingIndices.length} missing).`
+          : `Translated ${englishParagraphs.length} paragraphs across ${chunks.length} chunk(s) into literary Bangla.`,
     });
 
     return updatedProj;
@@ -417,14 +445,15 @@ export default function WorkspaceView({
     }
 
     const editedList: string[] = data.editedParagraphs || bnParagraphs;
-    const newPairs: ParagraphPair[] = ch.paragraphs.map((pair, idx) => ({
-      ...pair,
-      previousBanglaText: pair.banglaText,
-      banglaText: editedList[idx] || pair.banglaText,
-      lastRefinementAction: 'stage_4_editorial',
-    }));
+    const newPairs: ParagraphPair[] = applyStage4EditsToParagraphs(
+      ch.paragraphs,
+      editedList
+    );
 
-    const fullBangla = newPairs.map((p) => p.banglaText).join('\n\n');
+    const fullBangla = joinParagraphsWithSceneBreaks(newPairs, {
+      field: 'banglaText',
+      omitEmpty: true,
+    });
 
     const updatedProj = updateChapterInProject(currentProj, ch.id, (existing) => ({
       ...existing,
@@ -488,14 +517,20 @@ export default function WorkspaceView({
       (i: VerificationIssue) => i.severity === 'high' && !i.resolved
     );
 
-    const updatedProj = updateChapterInProject(currentProj, ch.id, (existing) => ({
-      ...existing,
-      currentStage: 5,
-      verificationReport: report,
-      status: hasUnresolvedHighIssues ? 'needs_review' : 'completed',
-      stageCompleted: { ...existing.stageCompleted, verification: true },
-      updatedAt: new Date().toISOString(),
-    }));
+    const updatedProj = updateChapterInProject(currentProj, ch.id, (existing) => {
+      const completionState = getPipelineCompletionState(
+        existing.paragraphs,
+        hasUnresolvedHighIssues
+      );
+      return {
+        ...existing,
+        currentStage: 5,
+        verificationReport: report,
+        status: completionState.chapterStatus,
+        stageCompleted: { ...existing.stageCompleted, verification: true },
+        updatedAt: new Date().toISOString(),
+      };
+    });
 
     onLogHistory({
       projectId: updatedProj.id,
@@ -513,6 +548,7 @@ export default function WorkspaceView({
   const handleRunFullPipeline = async () => {
     try {
       setErrorBanner(null);
+      setPipelineBannerTone('success');
       let cur = projectRef.current;
 
       // Always run Stage 1 to extract context/characters from current chapter
@@ -530,10 +566,23 @@ export default function WorkspaceView({
       cur = await executeStage4(cur);
 
       // Stage 5: Accuracy Verification
-      await executeStage5(cur);
+      cur = await executeStage5(cur);
 
-      setPipelineBanner('All 5 stages of the Adaptive Literary Translation Pipeline completed.');
-      setTimeout(() => setPipelineBanner(null), 5000);
+      const finalCh =
+        cur.chapters.find((c) => c.id === activeChapter.id) || cur.chapters[0];
+      const hasUnresolvedHigh = (finalCh.verificationReport?.issues || []).some(
+        (i: VerificationIssue) => i.severity === 'high' && !i.resolved
+      );
+      const completion = getPipelineCompletionState(
+        finalCh.paragraphs,
+        hasUnresolvedHigh
+      );
+
+      setPipelineBannerTone(completion.bannerTone);
+      setPipelineBanner(completion.bannerMessage);
+      if (completion.isComplete) {
+        setTimeout(() => setPipelineBanner(null), 5000);
+      }
     } catch (err: unknown) {
       setErrorBanner(
         err instanceof Error ? err.message : 'Pipeline execution encountered an error.'
@@ -596,22 +645,30 @@ export default function WorkspaceView({
 
       const newPairs = activeChapter.paragraphs.map((item, idx) =>
         idx === paragraphIndex
-          ? {
-              ...item,
+          ? updateParagraphTranslation(item, data.refinedBangla, {
               previousBanglaText: item.banglaText,
-              banglaText: data.refinedBangla,
               lastRefinementAction: action,
               refinementRationale: data.rationale,
-            }
+              markEmptyAsMissing: true,
+            })
           : item
       );
 
-      const fullBangla = newPairs.map((p) => p.banglaText).join('\n\n');
+      const fullBangla = joinParagraphsWithSceneBreaks(newPairs, {
+        field: 'banglaText',
+        omitEmpty: true,
+      });
 
       updateChapterInProject(project, activeChapter.id, (existing) => ({
         ...existing,
         translatedText: fullBangla,
         paragraphs: newPairs,
+        status: existing.stageCompleted.verification
+          ? getPipelineCompletionState(
+              newPairs,
+              existing.verificationReport?.issues || []
+            ).chapterStatus
+          : existing.status,
         updatedAt: new Date().toISOString(),
       }));
 
@@ -641,19 +698,26 @@ export default function WorkspaceView({
   const handleManualParagraphChange = (paragraphIndex: number, newBangla: string) => {
     const newPairs = activeChapter.paragraphs.map((item, idx) =>
       idx === paragraphIndex
-        ? {
-            ...item,
-            banglaText: newBangla,
-            lastRefinementAction: 'manual_edit' as const,
-          }
+        ? updateParagraphTranslation(item, newBangla, {
+            lastRefinementAction: 'manual_edit',
+          })
         : item
     );
-    const fullBangla = newPairs.map((p) => p.banglaText).join('\n\n');
+    const fullBangla = joinParagraphsWithSceneBreaks(newPairs, {
+      field: 'banglaText',
+      omitEmpty: true,
+    });
 
     updateChapterInProject(project, activeChapter.id, (existing) => ({
       ...existing,
       translatedText: fullBangla,
       paragraphs: newPairs,
+      status: existing.stageCompleted.verification
+        ? getPipelineCompletionState(
+            newPairs,
+            existing.verificationReport?.issues || []
+          ).chapterStatus
+        : existing.status,
       updatedAt: new Date().toISOString(),
     }));
   };
@@ -661,23 +725,32 @@ export default function WorkspaceView({
   // Revert a single paragraph to its previous version
   const handleRevertParagraph = (paragraphIndex: number) => {
     const pair = activeChapter.paragraphs[paragraphIndex];
-    if (!pair || !pair.previousBanglaText) return;
+    if (
+      !pair ||
+      pair.previousBanglaText === undefined ||
+      pair.previousBanglaText === null
+    ) {
+      return;
+    }
 
     const newPairs = activeChapter.paragraphs.map((item, idx) =>
-      idx === paragraphIndex
-        ? {
-            ...item,
-            banglaText: pair.previousBanglaText!,
-            previousBanglaText: item.banglaText,
-          }
-        : item
+      idx === paragraphIndex ? revertParagraphTranslation(item) : item
     );
-    const fullBangla = newPairs.map((p) => p.banglaText).join('\n\n');
+    const fullBangla = joinParagraphsWithSceneBreaks(newPairs, {
+      field: 'banglaText',
+      omitEmpty: true,
+    });
 
     updateChapterInProject(project, activeChapter.id, (existing) => ({
       ...existing,
       translatedText: fullBangla,
       paragraphs: newPairs,
+      status: existing.stageCompleted.verification
+        ? getPipelineCompletionState(
+            newPairs,
+            existing.verificationReport?.issues || []
+          ).chapterStatus
+        : existing.status,
       updatedAt: new Date().toISOString(),
     }));
   };
@@ -686,27 +759,44 @@ export default function WorkspaceView({
   const handleContinuousSourceChange = (newEnglish: string) => {
     const aligned = alignParagraphs(
       newEnglish,
-      activeChapter.translatedText,
+      '',
       activeChapter.paragraphs
     );
+    const syncedBangla = joinParagraphsWithSceneBreaks(aligned, {
+      field: 'banglaText',
+      omitEmpty: true,
+    });
     updateChapterInProject(project, activeChapter.id, (existing) => ({
       ...existing,
       originalText: newEnglish,
+      translatedText: syncedBangla,
       paragraphs: aligned,
+      status: existing.stageCompleted.verification
+        ? getPipelineCompletionState(
+            aligned,
+            existing.verificationReport?.issues || []
+          ).chapterStatus
+        : existing.status,
       updatedAt: new Date().toISOString(),
     }));
   };
 
   const handleContinuousBanglaChange = (newBangla: string) => {
-    const aligned = alignParagraphs(
+    const result = applyContinuousBanglaEdit(
       activeChapter.originalText,
       newBangla,
       activeChapter.paragraphs
     );
+    if (!result.applied) {
+      if (result.reason) {
+        setErrorBanner(result.reason);
+      }
+      return;
+    }
     updateChapterInProject(project, activeChapter.id, (existing) => ({
       ...existing,
-      translatedText: newBangla,
-      paragraphs: aligned,
+      translatedText: result.translatedText,
+      paragraphs: result.paragraphs,
       updatedAt: new Date().toISOString(),
     }));
   };
@@ -718,7 +808,6 @@ export default function WorkspaceView({
 
     const nextNum = project.chapters.length + 1;
     const chTitle = newChTitle.trim() || `Chapter ${nextNum}`;
-    const paras = splitIntoParagraphs(newChText);
     const chunks = chunkTextByParagraphs(newChText, settings.maxWordsPerChunk || 500);
     const now = new Date().toISOString();
 
@@ -728,11 +817,7 @@ export default function WorkspaceView({
       title: chTitle,
       originalText: newChText.trim(),
       translatedText: '',
-      paragraphs: paras.map((eng, idx) => ({
-        index: idx,
-        englishText: eng,
-        banglaText: '',
-      })),
+      paragraphs: alignParagraphs(newChText, ''),
       status: 'pending',
       currentStage: 0,
       stageCompleted: {
@@ -794,6 +879,14 @@ export default function WorkspaceView({
     (p) => p.banglaText.trim().length > 0
   ).length;
   const totalParagraphCount = activeChapter.paragraphs.length;
+  const missingParagraphIndices = activeChapter.paragraphs
+    .filter((p) => Boolean(p.missingTranslation))
+    .map((p) => p.index);
+  const hasMissingTranslations = missingParagraphIndices.length > 0;
+  const hasUnresolvedHighVerificationIssues = (
+    activeChapter.verificationReport?.issues || []
+  ).some((i) => i.severity === 'high' && !i.resolved);
+  const continuousBanglaGuard = canEditContinuousBangla(activeChapter.paragraphs);
 
   return (
     <div className="max-w-[1440px] mx-auto px-6 lg:px-10 py-6 space-y-6">
@@ -1039,19 +1132,28 @@ export default function WorkspaceView({
                 }
               }}
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                activeChapter.stageCompleted.translation
-                  ? 'bg-white border-[#D6CFC5] text-[#1C1917]'
-                  : 'bg-[#FAF8F5] border-[#E5E0D8] text-[#57534E]'
+                hasMissingTranslations
+                  ? 'bg-[#FFFBEB] border-[#F59E0B] text-[#92400E]'
+                  : activeChapter.stageCompleted.translation
+                    ? 'bg-white border-[#D6CFC5] text-[#1C1917]'
+                    : 'bg-[#FAF8F5] border-[#E5E0D8] text-[#57534E]'
               }`}
             >
               {runningStage === 3 ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin text-[#9A3412]" />
+              ) : hasMissingTranslations ? (
+                <AlertCircle className="w-3.5 h-3.5 text-[#D97706]" />
               ) : activeChapter.stageCompleted.translation ? (
                 <CheckCircle2 className="w-3.5 h-3.5 text-[#16A34A]" />
               ) : (
                 <span className="font-mono-num text-[11px] text-[#78716C]">03.</span>
               )}
-              <span>Faithful Translation</span>
+              <span>
+                Faithful Translation
+                {hasMissingTranslations
+                  ? ` (${missingParagraphIndices.length} Missing)`
+                  : ''}
+              </span>
             </button>
 
             {/* Stage 4 */}
@@ -1090,8 +1192,23 @@ export default function WorkspaceView({
               disabled={runningStage !== 0}
               onClick={async () => {
                 try {
-                  await executeStage5();
-                  setPipelineBanner(null);
+                  const updated = await executeStage5();
+                  const finalCh =
+                    updated.chapters.find((c) => c.id === activeChapter.id) ||
+                    updated.chapters[0];
+                  const hasUnresolvedHigh = (
+                    finalCh.verificationReport?.issues || []
+                  ).some((i) => i.severity === 'high' && !i.resolved);
+                  const completion = getPipelineCompletionState(
+                    finalCh.paragraphs,
+                    hasUnresolvedHigh
+                  );
+                  if (!completion.isComplete) {
+                    setPipelineBannerTone(completion.bannerTone);
+                    setPipelineBanner(completion.bannerMessage);
+                  } else {
+                    setPipelineBanner(null);
+                  }
                 } catch (e: unknown) {
                   setErrorBanner(e instanceof Error ? e.message : 'Stage 5 error');
                 } finally {
@@ -1099,13 +1216,19 @@ export default function WorkspaceView({
                 }
               }}
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                activeChapter.stageCompleted.verification
-                  ? 'bg-white border-[#D6CFC5] text-[#1C1917]'
-                  : 'bg-[#FAF8F5] border-[#E5E0D8] text-[#57534E]'
+                activeChapter.stageCompleted.verification &&
+                (hasMissingTranslations || hasUnresolvedHighVerificationIssues)
+                  ? 'bg-[#FFFBEB] border-[#F59E0B] text-[#92400E]'
+                  : activeChapter.stageCompleted.verification
+                    ? 'bg-white border-[#D6CFC5] text-[#1C1917]'
+                    : 'bg-[#FAF8F5] border-[#E5E0D8] text-[#57534E]'
               }`}
             >
               {runningStage === 5 ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin text-[#9A3412]" />
+              ) : activeChapter.stageCompleted.verification &&
+                (hasMissingTranslations || hasUnresolvedHighVerificationIssues) ? (
+                <AlertCircle className="w-3.5 h-3.5 text-[#D97706]" />
               ) : activeChapter.stageCompleted.verification ? (
                 <CheckCircle2 className="w-3.5 h-3.5 text-[#16A34A]" />
               ) : (
@@ -1138,9 +1261,18 @@ export default function WorkspaceView({
 
         {/* Live Progress or Error Feedback */}
         {pipelineBanner && (
-          <div className="p-3 bg-white border border-[#D6CFC5] rounded-lg flex items-center gap-2.5 text-xs text-[#1C1917]">
+          <div
+            className={`p-3 rounded-lg flex items-center gap-2.5 text-xs ${
+              runningStage === 0 &&
+              (pipelineBannerTone === 'warning' || hasMissingTranslations)
+                ? 'bg-[#FFFBEB] border border-[#F59E0B] text-[#92400E]'
+                : 'bg-white border border-[#D6CFC5] text-[#1C1917]'
+            }`}
+          >
             {runningStage !== 0 ? (
               <Loader2 className="w-4 h-4 animate-spin text-[#9A3412] shrink-0" />
+            ) : pipelineBannerTone === 'warning' || hasMissingTranslations ? (
+              <AlertCircle className="w-4 h-4 text-[#D97706] shrink-0" />
             ) : (
               <CheckCircle2 className="w-4 h-4 text-[#16A34A] shrink-0" />
             )}
@@ -1160,6 +1292,38 @@ export default function WorkspaceView({
               className="underline font-semibold cursor-pointer"
             >
               Dismiss
+            </button>
+          </div>
+        )}
+
+        {/* Summary Warning Banner when Stage 3 left missing paragraph translations */}
+        {hasMissingTranslations && (
+          <div
+            role="alert"
+            className="p-3 bg-[#FFFBEB] border border-[#F59E0B] rounded-lg flex flex-wrap items-center justify-between gap-3 text-xs text-[#92400E]"
+          >
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-[#D97706] shrink-0" />
+              <span>
+                <strong>Incomplete Translation Warning:</strong>{' '}
+                {missingParagraphIndices.length}{' '}
+                {missingParagraphIndices.length === 1 ? 'paragraph is' : 'paragraphs are'}{' '}
+                missing a Bangla translation (Paragraph{' '}
+                {missingParagraphIndices.map((idx) => `#${idx + 1}`).join(', ')}). Original
+                paragraph positions were preserved—please edit or retry the highlighted{' '}
+                {missingParagraphIndices.length === 1 ? 'paragraph' : 'paragraphs'} below.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setSubTab('manuscript');
+                setEditorMode('paragraphs');
+                setSelectedParagraphIdx(missingParagraphIndices[0]);
+              }}
+              className="px-2.5 py-1 text-xs font-semibold text-[#92400E] bg-[#FEF3C7] hover:bg-[#FDE68A] border border-[#F59E0B] rounded-md cursor-pointer whitespace-nowrap shrink-0"
+            >
+              Jump to Paragraph #{missingParagraphIndices[0] + 1}
             </button>
           </div>
         )}
@@ -1282,15 +1446,18 @@ export default function WorkspaceView({
               {activeChapter.paragraphs.map((pair, idx) => {
                 const isSelected = selectedParagraphIdx === idx;
                 const isRefiningThis = refiningParagraphIdx === idx;
+                const isMissing = Boolean(pair.missingTranslation);
 
                 return (
                   <div
                     key={idx}
                     onClick={() => setSelectedParagraphIdx(idx)}
                     className={`rounded-xl border transition-colors p-5 space-y-4 ${
-                      isSelected
-                        ? 'bg-white border-[#9A3412] shadow-xs'
-                        : 'bg-white border-[#E5E0D8] hover:border-[#D6CFC5]'
+                      isMissing
+                        ? 'bg-[#FFFDF9] border-[#F59E0B] shadow-xs'
+                        : isSelected
+                          ? 'bg-white border-[#9A3412] shadow-xs'
+                          : 'bg-white border-[#E5E0D8] hover:border-[#D6CFC5]'
                     }`}
                   >
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -1298,6 +1465,11 @@ export default function WorkspaceView({
                       <div className="lg:col-span-6 space-y-1.5">
                         <div className="flex items-center justify-between text-[11px] text-[#78716C] font-mono-num">
                           <span>Paragraph {idx + 1} · English Source</span>
+                          {pair.sceneBreakAfter && (
+                            <span className="px-2 py-0.5 rounded bg-[#F3EFEA] text-[#57534E] font-mono text-[10px]">
+                              Scene Break After ({pair.sceneBreakMarker || 'Blank Lines'})
+                            </span>
+                          )}
                         </div>
                         <p
                           className="text-[#1C1917] leading-relaxed select-text"
@@ -1309,15 +1481,39 @@ export default function WorkspaceView({
 
                       {/* Right: Editable Bangla Paragraph */}
                       <div className="lg:col-span-6 space-y-1.5">
-                        <div className="flex items-center justify-between text-[11px] text-[#78716C]">
-                          <span className="font-mono-num">
-                            অনুচ্ছেদ {idx + 1} · বাংলা অনুবাদ
-                          </span>
-                          {pair.lastRefinementAction && (
-                            <span className="text-[#9A3412]">
-                              Refined ({pair.lastRefinementAction.replace(/_/g, ' ')})
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#78716C]">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono-num">
+                              অনুচ্ছেদ {idx + 1} · বাংলা অনুবাদ
                             </span>
-                          )}
+                            {isMissing && (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#FEF3C7] border border-[#F59E0B] text-[#92400E] font-semibold">
+                                <AlertCircle className="w-3 h-3 text-[#D97706]" />
+                                <span>Missing Translation</span>
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {isMissing && (
+                              <button
+                                type="button"
+                                disabled={isRefiningThis}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleRefineParagraph(idx, 'match_author_style');
+                                }}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#9A3412] text-white font-semibold hover:bg-[#7C2D12] disabled:opacity-50 cursor-pointer"
+                              >
+                                <Sparkles className="w-2.5 h-2.5" />
+                                <span>Retry Translation</span>
+                              </button>
+                            )}
+                            {!isMissing && pair.lastRefinementAction && (
+                              <span className="text-[#9A3412]">
+                                Refined ({pair.lastRefinementAction.replace(/_/g, ' ')})
+                              </span>
+                            )}
+                          </div>
                         </div>
                         <textarea
                           rows={Math.max(
@@ -1330,10 +1526,18 @@ export default function WorkspaceView({
                           onChange={(e) =>
                             handleManualParagraphChange(idx, e.target.value)
                           }
-                          placeholder="এই অনুচ্ছেদের বাংলা অনুবাদ এখানে প্রদর্শিত হবে..."
+                          placeholder={
+                            isMissing
+                              ? 'সতর্কবার্তা: এই অনুচ্ছেদটির অনুবাদ পাওয়া যায়নি। এখানে সরাসরি বাংলা লিখুন অথবা "Retry Translation" বোতামে ক্লিক করুন...'
+                              : 'এই অনুচ্ছেদের বাংলা অনুবাদ এখানে প্রদর্শিত হবে...'
+                          }
                           aria-label={`Bangla translation for paragraph ${idx + 1}`}
                           style={{ fontSize: `${settings.banglaFontSize}px` }}
-                          className="w-full p-3 font-bangla text-[#1C1917] bg-[#FAF8F5] border border-[#E5E0D8] rounded-lg focus:outline-none focus:border-[#9A3412] focus:bg-white transition-colors"
+                          className={`w-full p-3 font-bangla text-[#1C1917] rounded-lg focus:outline-none focus:bg-white transition-colors ${
+                            isMissing
+                              ? 'bg-[#FFFBEB] border border-[#F59E0B] focus:border-[#D97706]'
+                              : 'bg-[#FAF8F5] border border-[#E5E0D8] focus:border-[#9A3412]'
+                          }`}
                         />
                       </div>
                     </div>
@@ -1348,16 +1552,17 @@ export default function WorkspaceView({
                           <span className="text-xs font-semibold text-[#1C1917]">
                             Paragraph {idx + 1} Literary Refinement Controls (Edits only this paragraph):
                           </span>
-                          {pair.previousBanglaText && (
-                            <button
-                              type="button"
-                              onClick={() => handleRevertParagraph(idx)}
-                              className="inline-flex items-center gap-1 text-xs font-medium text-[#9A3412] hover:underline cursor-pointer"
-                            >
-                              <RotateCcw className="w-3 h-3" />
-                              <span>Revert to Previous Version</span>
-                            </button>
-                          )}
+                          {pair.previousBanglaText !== undefined &&
+                            pair.previousBanglaText !== null && (
+                              <button
+                                type="button"
+                                onClick={() => handleRevertParagraph(idx)}
+                                className="inline-flex items-center gap-1 text-xs font-medium text-[#9A3412] hover:underline cursor-pointer"
+                              >
+                                <RotateCcw className="w-3 h-3" />
+                                <span>Revert to Previous Version</span>
+                              </button>
+                            )}
                         </div>
 
                         <div className="flex flex-wrap items-center gap-2">
@@ -1396,7 +1601,8 @@ export default function WorkspaceView({
                         </div>
 
                         {/* Comparison with Previous Version */}
-                        {pair.previousBanglaText &&
+                        {pair.previousBanglaText !== undefined &&
+                          pair.previousBanglaText !== null &&
                           pair.previousBanglaText !== pair.banglaText && (
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 p-3 bg-[#FAF8F5] border border-[#E5E0D8] rounded-lg">
                               <div>
@@ -1404,7 +1610,7 @@ export default function WorkspaceView({
                                   Previous Paragraph Version
                                 </div>
                                 <p className="font-bangla text-sm text-[#57534E]">
-                                  {pair.previousBanglaText}
+                                  {pair.previousBanglaText || '(Empty / Untranslated)'}
                                 </p>
                               </div>
                               <div>
@@ -1415,7 +1621,7 @@ export default function WorkspaceView({
                                     : ''}
                                 </div>
                                 <p className="font-bangla text-sm text-[#1C1917]">
-                                  {pair.banglaText}
+                                  {pair.banglaText || '(Empty / Untranslated)'}
                                 </p>
                               </div>
                             </div>
@@ -1457,14 +1663,50 @@ export default function WorkspaceView({
                     {countWords(activeChapter.translatedText)} words
                   </span>
                 </div>
+
+                {!continuousBanglaGuard.allowed && (
+                  <div
+                    role="status"
+                    className="p-3 bg-[#FFFBEB] border border-[#F59E0B] rounded-lg space-y-2 text-xs text-[#92400E]"
+                  >
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 text-[#D97706] shrink-0 mt-0.5" />
+                      <span>
+                        <strong>Continuous Bangla Editor Locked:</strong>{' '}
+                        {continuousBanglaGuard.reason}
+                      </span>
+                    </div>
+                    {continuousBanglaGuard.missingIndices.length > 0 && (
+                      <div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditorMode('paragraphs');
+                            setSelectedParagraphIdx(continuousBanglaGuard.missingIndices[0]);
+                          }}
+                          className="px-2.5 py-1 text-xs font-semibold text-[#92400E] bg-[#FEF3C7] hover:bg-[#FDE68A] border border-[#F59E0B] rounded-md cursor-pointer"
+                        >
+                          Open Paragraph Studio (Paragraph #
+                          {continuousBanglaGuard.missingIndices[0] + 1})
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <textarea
                   rows={22}
                   value={activeChapter.translatedText}
+                  readOnly={!continuousBanglaGuard.allowed}
                   onChange={(e) => handleContinuousBanglaChange(e.target.value)}
                   placeholder="বাংলা অনুবাদ এখানে সম্পাদনা করুন..."
                   aria-label="Translated Bangla Chapter Editor"
                   style={{ fontSize: `${settings.banglaFontSize}px` }}
-                  className="w-full p-3 font-bangla leading-relaxed bg-[#FAF8F5] border border-[#E5E0D8] rounded-lg focus:outline-none focus:border-[#9A3412]"
+                  className={`w-full p-3 font-bangla leading-relaxed border rounded-lg focus:outline-none ${
+                    continuousBanglaGuard.allowed
+                      ? 'bg-[#FAF8F5] border-[#E5E0D8] focus:border-[#9A3412]'
+                      : 'bg-[#F5F2EB] border-[#E5E0D8] text-[#57534E] cursor-text'
+                  }`}
                 />
               </div>
             </div>
@@ -1566,8 +1808,20 @@ export default function WorkspaceView({
           }}
           onRunStage5={async () => {
             try {
-              await executeStage5();
-              setPipelineBanner(null);
+              const updated = await executeStage5();
+              const finalCh =
+                updated.chapters.find((c) => c.id === activeChapter.id) ||
+                updated.chapters[0];
+              const completion = getPipelineCompletionState(
+                finalCh.paragraphs,
+                finalCh.verificationReport?.issues || []
+              );
+              if (!completion.isComplete) {
+                setPipelineBannerTone(completion.bannerTone);
+                setPipelineBanner(completion.bannerMessage);
+              } else {
+                setPipelineBanner(null);
+              }
             } catch (e: unknown) {
               setErrorBanner(e instanceof Error ? e.message : 'Stage 5 error');
             } finally {
@@ -1577,32 +1831,73 @@ export default function WorkspaceView({
           onApplySuggestedFix={(issue) => {
             const pIdx = issue.paragraphIndex ?? 0;
             if (!issue.suggestedFix) return;
-            handleManualParagraphChange(pIdx, issue.suggestedFix);
 
-            if (activeChapter.verificationReport) {
-              const updatedIssues = activeChapter.verificationReport.issues.map((i) =>
-                i.id === issue.id ? { ...i, resolved: true } : i
+            updateChapterInProject(project, activeChapter.id, (existing) => {
+              const newPairs = existing.paragraphs.map((item, idx) =>
+                idx === pIdx
+                  ? updateParagraphTranslation(item, issue.suggestedFix!, {
+                      lastRefinementAction: 'manual_edit',
+                    })
+                  : item
               );
-              updateChapterInProject(project, activeChapter.id, (existing) => ({
+              const fullBangla = joinParagraphsWithSceneBreaks(newPairs, {
+                field: 'banglaText',
+                omitEmpty: true,
+              });
+              const currentIssues = existing.verificationReport?.issues || [];
+              const resolved = resolveVerificationIssue(
+                newPairs,
+                currentIssues,
+                issue.id
+              );
+              if (pipelineBanner) {
+                if (resolved.completion.isComplete) {
+                  setPipelineBanner(null);
+                } else {
+                  setPipelineBannerTone(resolved.completion.bannerTone);
+                  setPipelineBanner(resolved.completion.bannerMessage);
+                }
+              }
+              return {
                 ...existing,
+                translatedText: fullBangla,
+                paragraphs: newPairs,
+                status: existing.stageCompleted.verification
+                  ? resolved.chapterStatus
+                  : existing.status,
                 verificationReport: existing.verificationReport
-                  ? { ...existing.verificationReport, issues: updatedIssues }
+                  ? { ...existing.verificationReport, issues: resolved.updatedIssues }
                   : null,
-              }));
-            }
+                updatedAt: new Date().toISOString(),
+              };
+            });
           }}
           onMarkIssueResolved={(issueId) => {
             if (!activeChapter.verificationReport) return;
-            const updatedIssues = activeChapter.verificationReport.issues.map((i) =>
-              i.id === issueId ? { ...i, resolved: true } : i
-            );
-            updateChapterInProject(project, activeChapter.id, (existing) => ({
-              ...existing,
-              status: 'completed',
-              verificationReport: existing.verificationReport
-                ? { ...existing.verificationReport, issues: updatedIssues }
-                : null,
-            }));
+            updateChapterInProject(project, activeChapter.id, (existing) => {
+              const currentIssues = existing.verificationReport?.issues || [];
+              const resolved = resolveVerificationIssue(
+                existing.paragraphs,
+                currentIssues,
+                issueId
+              );
+              if (pipelineBanner) {
+                if (resolved.completion.isComplete) {
+                  setPipelineBanner(null);
+                } else {
+                  setPipelineBannerTone(resolved.completion.bannerTone);
+                  setPipelineBanner(resolved.completion.bannerMessage);
+                }
+              }
+              return {
+                ...existing,
+                status: resolved.chapterStatus,
+                verificationReport: existing.verificationReport
+                  ? { ...existing.verificationReport, issues: resolved.updatedIssues }
+                  : null,
+                updatedAt: new Date().toISOString(),
+              };
+            });
           }}
         />
       )}

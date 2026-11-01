@@ -42,15 +42,68 @@ export type TerminologyCategory =
   | 'place'
   | 'title'
   | 'object'
+  | 'nautical'
+  | 'cultural'
   | 'fantasy'
   | 'expression';
+
+export type TerminologySource =
+  | 'stage1_ai'
+  | 'chunk_ai'
+  | 'user'
+  | 'location_sync';
 
 export interface TerminologyMemoryItem {
   id: string;
   englishTerm: string;
   banglaTranslation: string;
+  acceptedAlternatives?: string[];
+  avoidTranslations?: string[];
   category: TerminologyCategory;
+  contextMeaning?: string;
   notes: string;
+  caseSensitive?: boolean;
+  isContextSensitive?: boolean;
+  banglaStem?: string;
+  allowInflections?: boolean;
+  source?: TerminologySource;
+  lockedByUser?: boolean;
+}
+
+export type TerminologyFindingClassification =
+  | 'definite_violation'
+  | 'contextual_review';
+
+export type TerminologyFindingReason =
+  | 'avoid_term_used'
+  | 'locked_term_missing'
+  | 'unapproved_variant_used'
+  | 'cross_paragraph_drift'
+  | 'missing_expected_term'
+  | 'contextual_review_needed';
+
+export interface TerminologyLintFinding {
+  id: string;
+  termId: string;
+  englishTerm: string;
+  expectedBangla: string;
+  acceptedAlternatives: string[];
+  avoidTranslations: string[];
+  paragraphIndex: number;
+  displayParagraphNumber: number;
+  severity: 'high' | 'medium' | 'low';
+  classification: TerminologyFindingClassification;
+  reason: TerminologyFindingReason;
+  matchedEnglishText: string;
+  detectedBanglaVariant?: string;
+  englishExcerpt: string;
+  banglaExcerpt: string;
+  description: string;
+  suggestedFix: string;
+  lockedByUser: boolean;
+  isContextSensitive: boolean;
+  category: TerminologyCategory;
+  contextMeaning?: string;
 }
 
 export interface TranslationStyleControls {
@@ -77,6 +130,9 @@ export interface ParagraphPair {
   previousBanglaText?: string;
   lastRefinementAction?: ParagraphRefinementAction | 'stage_4_editorial' | 'manual_edit';
   refinementRationale?: string;
+  sceneBreakAfter?: boolean;
+  sceneBreakMarker?: string;
+  missingTranslation?: boolean;
 }
 
 export interface EditorialChange {

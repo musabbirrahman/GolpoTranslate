@@ -4,6 +4,7 @@ import React, { useState, useRef } from 'react';
 import { X, Upload, BookOpen, FileText, Sparkles } from 'lucide-react';
 import { SAMPLE_LITERARY_PASSAGES, type SamplePassage } from '@/lib/sample-passages';
 import {
+  alignParagraphs,
   countWords,
   splitIntoParagraphs,
   splitManuscriptIntoChapters,
@@ -114,7 +115,6 @@ export default function NewProjectModal({
       : [{ title: chapterTitle || 'Chapter 1', content: manuscriptText.trim() }];
 
     const chapters: Chapter[] = rawChapters.map((raw, idx) => {
-      const paragraphs = splitIntoParagraphs(raw.content);
       const chunks = chunkTextByParagraphs(raw.content, maxWordsPerChunk);
       return {
         id: `ch-${Date.now()}-${idx + 1}`,
@@ -122,11 +122,7 @@ export default function NewProjectModal({
         title: raw.title || `Chapter ${idx + 1}`,
         originalText: raw.content,
         translatedText: '',
-        paragraphs: paragraphs.map((eng, pIdx) => ({
-          index: pIdx,
-          englishText: eng,
-          banglaText: '',
-        })),
+        paragraphs: alignParagraphs(raw.content, ''),
         status: 'pending',
         currentStage: 0,
         stageCompleted: {
