@@ -99,11 +99,31 @@ export interface TerminologyLintFinding {
   englishExcerpt: string;
   banglaExcerpt: string;
   description: string;
-  suggestedFix: string;
+  /**
+   * Optional full-paragraph Bangla replacement. Always undefined for deterministic
+   * terminology lint findings so they never overwrite a paragraph with an English instruction.
+   */
+  suggestedFix?: string;
+  /**
+   * Human-readable remediation guidance for resolving the terminology finding.
+   */
+  editorialGuidance?: string;
   lockedByUser: boolean;
   isContextSensitive: boolean;
   category: TerminologyCategory;
   contextMeaning?: string;
+}
+
+export interface Stage1CoverageMetadata {
+  totalChars: number;
+  analyzedChars: number;
+  totalWindows: number;
+  successfulWindows: number;
+  failedWindowIndices: number[];
+  skippedWindowIndices: number[];
+  isComplete: boolean;
+  isPartial: boolean;
+  warningMessage?: string;
 }
 
 export interface TranslationStyleControls {
@@ -163,6 +183,17 @@ export interface VerificationIssue {
   banglaExcerpt?: string;
   suggestedFix?: string;
   resolved: boolean;
+  /**
+   * Optional Phase 2B provenance and deterministic reconciliation metadata.
+   * Keeps AI-generated literary QA issues strictly separate from deterministic terminology findings.
+   */
+  source?: 'ai_stage5' | 'deterministic_lint';
+  termId?: string;
+  lintReason?: TerminologyFindingReason;
+  expectedBangla?: string;
+  detectedBanglaVariant?: string;
+  paragraphContentFingerprint?: string;
+  findingSignature?: string;
 }
 
 export interface VerificationReport {
@@ -197,6 +228,7 @@ export interface Chapter {
   editorialNotes: string[];
   editorialChanges: EditorialChange[];
   verificationReport: VerificationReport | null;
+  stage1Coverage?: Stage1CoverageMetadata;
   chunkCount: number;
   completedChunks: number;
   updatedAt: string;

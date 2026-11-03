@@ -19,6 +19,8 @@ interface VerificationAndEditorialPanelProps {
   editorialNotes: string[];
   editorialChanges: EditorialChange[];
   verificationReport: VerificationReport | null;
+  isVerificationComplete?: boolean;
+  isAnyStageRunning?: boolean;
   isRunningStage4: boolean;
   isRunningStage5: boolean;
   onRunStage4: () => void;
@@ -27,10 +29,14 @@ interface VerificationAndEditorialPanelProps {
   onMarkIssueResolved: (issueId: string) => void;
 }
 
+const BANGLA_SCRIPT_RE = /[\u0980-\u09FF]/;
+
 export default function VerificationAndEditorialPanel({
   editorialNotes,
   editorialChanges,
   verificationReport,
+  isVerificationComplete = false,
+  isAnyStageRunning = false,
   isRunningStage4,
   isRunningStage5,
   onRunStage4,
@@ -38,6 +44,43 @@ export default function VerificationAndEditorialPanel({
   onApplySuggestedFix,
   onMarkIssueResolved,
 }: VerificationAndEditorialPanelProps) {
+  const isPartialSummary = Boolean(
+    verificationReport?.fidelitySummary &&
+      /^\[Partial Verification/i.test(verificationReport.fidelitySummary)
+  );
+  const isDeterministicOnly = Boolean(
+    verificationReport?.fidelitySummary &&
+      /^Deterministic terminology check/i.test(verificationReport.fidelitySummary)
+  );
+  const hasUnresolvedHigh = Boolean(
+    verificationReport?.issues.some((i) => i.severity === 'high' && !i.resolved)
+  );
+  const isFullVerified = Boolean(
+    verificationReport &&
+      isVerificationComplete &&
+      !isPartialSummary &&
+      !isDeterministicOnly
+  );
+
+  const stage5Disabled = isAnyStageRunning || isRunningStage4 || isRunningStage5;
+  const stage4Disabled = isAnyStageRunning || isRunningStage4 || isRunningStage5;
+
+  let coverageStatusLabel = 'Partial / Outdated Verification · Re-run Stage 5';
+  let coverageStatusColor = 'text-[#D97706]';
+
+  if (isDeterministicOnly) {
+    coverageStatusLabel = 'Terminology Pre-Check Only · Stage 5 Not Run';
+    coverageStatusColor = 'text-[#D97706]';
+  } else if (isFullVerified) {
+    if (verificationReport?.isComplete && !hasUnresolvedHigh) {
+      coverageStatusLabel = 'Full Chapter Verified';
+      coverageStatusColor = 'text-[#16A34A]';
+    } else {
+      coverageStatusLabel = 'Full Chapter Audited · Review Needed';
+      coverageStatusColor = 'text-[#D97706]';
+    }
+  }
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
       {/* Stage 5 Accuracy Verification (7 Cols) */}
@@ -58,7 +101,7 @@ export default function VerificationAndEditorialPanel({
           <button
             type="button"
             onClick={onRunStage5}
-            disabled={isRunningStage5}
+            disabled={stage5Disabled}
             className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#9A3412] rounded-lg hover:bg-[#7C2D12] disabled:opacity-60 transition-colors cursor-pointer whitespace-nowrap shrink-0"
           >
             <ShieldCheck className="w-3.5 h-3.5" />
@@ -73,12 +116,10 @@ export default function VerificationAndEditorialPanel({
             {/* Summary Banner */}
             <div className="p-4 rounded-xl bg-[#FAF8F5] border border-[#E5E0D8] flex flex-wrap items-center justify-between gap-4">
               <div className="space-y-1 flex-1">
-                <div className="flex items-center gap-2 text-xs font-semibold text-[#1C1917]">
-                  <span>Fidelity Verification Summary</span>
+                <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-[#1C1917]">
+                  <span>Verification Coverage</span>
                   <span aria-hidden="true">·</span>
-                  <span className="text-[#16A34A]">
-                    {verificationReport.isComplete ? '100% Paragraphs Present' : 'Review Needed'}
-                  </span>
+                  <span className={coverageStatusColor}>{coverageStatusLabel}</span>
                 </div>
                 <p className="text-xs text-[#57534E] leading-relaxed">
                   {verificationReport.fidelitySummary}
@@ -86,10 +127,35 @@ export default function VerificationAndEditorialPanel({
               </div>
 
               <div className="text-right shrink-0">
-                <div className="text-[11px] text-[#78716C]">Fidelity Rating</div>
-                <div className="font-display text-3xl font-semibold text-[#1C1917] font-mono-num">
-                  {verificationReport.overallScore}%
-                </div>
+                {isDeterministicOnly ? (
+                  <>
+                    <div className="text-[11px] text-[#78716C]">
+                      Stage 5 Fidelity Score
+                    </div>
+                    <div className="text-sm font-semibold text-[#78716C] mt-1">
+                      Not Yet Audited
+                    </div>
+                  </>
+                ) : isFullVerified ? (
+                  <>
+                    <div className="text-[11px] text-[#78716C]">Fidelity Score</div>
+                    <div className="font-display text-3xl font-semibold text-[#1C1917] font-mono-num">
+                      {verificationReport.overallScore}%
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-[11px] text-[#78716C]">
+                      Last Partial / Prior Score (Outdated)
+                    </div>
+                    <div className="font-display text-2xl font-semibold text-[#78716C] font-mono-num">
+                      {verificationReport.overallScore}%
+                    </div>
+                    <div className="text-[10px] text-[#9A3412] font-medium">
+                      Re-run Stage 5 for current chapter score
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 
@@ -109,72 +175,97 @@ export default function VerificationAndEditorialPanel({
                 <div className="text-xs font-semibold text-[#1C1917]">
                   Flagged Items for Human Review ({verificationReport.issues.length})
                 </div>
-                {verificationReport.issues.map((issue) => (
-                  <div
-                    key={issue.id}
-                    className={`p-4 rounded-xl border space-y-3 ${
-                      issue.resolved
-                        ? 'bg-[#FAF8F5] border-[#E5E0D8] opacity-70'
-                        : 'bg-white border-[#D97706]/50'
-                    }`}
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 text-xs">
-                        <AlertTriangle className="w-4 h-4 text-[#D97706]" />
-                        <span className="font-semibold text-[#1C1917] capitalize">
-                          {issue.type.replace(/_/g, ' ')}
-                        </span>
-                        <span aria-hidden="true">·</span>
-                        <span className="text-[#57534E] font-mono-num">
-                          Paragraph {(issue.paragraphIndex ?? 0) + 1}
-                        </span>
-                        <span aria-hidden="true">·</span>
-                        <span className="text-[#9A3412] uppercase text-[11px] font-semibold">
-                          {issue.severity} severity
-                        </span>
-                      </div>
+                {verificationReport.issues.map((issue) => {
+                  const hasValidParagraphIndex =
+                    typeof issue.paragraphIndex === 'number' &&
+                    Number.isFinite(issue.paragraphIndex) &&
+                    Number.isInteger(issue.paragraphIndex) &&
+                    issue.paragraphIndex >= 0;
 
-                      {issue.resolved ? (
-                        <span className="inline-flex items-center gap-1 text-xs font-semibold text-[#16A34A]">
-                          <Check className="w-3.5 h-3.5" />
-                          <span>Resolved</span>
-                        </span>
-                      ) : (
-                        <div className="flex items-center gap-2">
-                          {issue.suggestedFix && (
+                  const canApplyFix =
+                    hasValidParagraphIndex &&
+                    issue.source !== 'deterministic_lint' &&
+                    typeof issue.suggestedFix === 'string' &&
+                    issue.suggestedFix.trim().length > 0 &&
+                    BANGLA_SCRIPT_RE.test(issue.suggestedFix);
+
+                  return (
+                    <div
+                      key={issue.id}
+                      className={`p-4 rounded-xl border space-y-3 ${
+                        issue.resolved
+                          ? 'bg-[#FAF8F5] border-[#E5E0D8] opacity-70'
+                          : 'bg-white border-[#D97706]/50'
+                      }`}
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <AlertTriangle className="w-4 h-4 text-[#D97706]" />
+                          <span className="font-semibold text-[#1C1917] capitalize">
+                            {issue.type.replace(/_/g, ' ')}
+                          </span>
+                          <span aria-hidden="true">·</span>
+                          <span className="text-[#57534E] font-mono-num">
+                            {hasValidParagraphIndex
+                              ? `Paragraph ${issue.paragraphIndex! + 1}`
+                              : 'Chapter-Wide Issue'}
+                          </span>
+                          <span aria-hidden="true">·</span>
+                          <span className="text-[#9A3412] uppercase text-[11px] font-semibold">
+                            {issue.severity} severity
+                          </span>
+                          {issue.source === 'deterministic_lint' && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span className="text-[11px] font-medium text-[#57534E]">
+                                Glossary Rule Check
+                              </span>
+                            </>
+                          )}
+                        </div>
+
+                        {issue.resolved ? (
+                          <span className="inline-flex items-center gap-1 text-xs font-semibold text-[#16A34A]">
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Resolved</span>
+                          </span>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            {canApplyFix && (
+                              <button
+                                type="button"
+                                onClick={() => onApplySuggestedFix(issue)}
+                                className="px-3 py-1 text-xs font-semibold text-white bg-[#9A3412] rounded-md hover:bg-[#7C2D12] cursor-pointer"
+                              >
+                                Apply Suggested Fix
+                              </button>
+                            )}
                             <button
                               type="button"
-                              onClick={() => onApplySuggestedFix(issue)}
-                              className="px-3 py-1 text-xs font-semibold text-white bg-[#9A3412] rounded-md hover:bg-[#7C2D12] cursor-pointer"
+                              onClick={() => onMarkIssueResolved(issue.id)}
+                              className="px-3 py-1 text-xs font-medium text-[#57534E] bg-[#F3EFEA] rounded-md hover:text-[#1C1917] cursor-pointer"
                             >
-                              Apply Suggested Fix
+                              Dismiss / Resolved
                             </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => onMarkIssueResolved(issue.id)}
-                            className="px-3 py-1 text-xs font-medium text-[#57534E] bg-[#F3EFEA] rounded-md hover:text-[#1C1917] cursor-pointer"
-                          >
-                            Dismiss / Resolved
-                          </button>
+                          </div>
+                        )}
+                      </div>
+
+                      <p className="text-xs text-[#1C1917]">{issue.description}</p>
+
+                      {canApplyFix && (
+                        <div className="p-3 bg-[#FAF8F5] border border-[#E5E0D8] rounded-lg">
+                          <div className="text-[11px] text-[#78716C] mb-1">
+                            Suggested Bangla Paragraph Revision:
+                          </div>
+                          <p className="font-bangla text-sm text-[#1C1917]">
+                            {issue.suggestedFix}
+                          </p>
                         </div>
                       )}
                     </div>
-
-                    <p className="text-xs text-[#1C1917]">{issue.description}</p>
-
-                    {issue.suggestedFix && (
-                      <div className="p-3 bg-[#FAF8F5] border border-[#E5E0D8] rounded-lg">
-                        <div className="text-[11px] text-[#78716C] mb-1">
-                          Suggested Bangla Paragraph Revision:
-                        </div>
-                        <p className="font-bangla text-sm text-[#1C1917]">
-                          {issue.suggestedFix}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -203,7 +294,7 @@ export default function VerificationAndEditorialPanel({
           <button
             type="button"
             onClick={onRunStage4}
-            disabled={isRunningStage4}
+            disabled={stage4Disabled}
             className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#1C1917] bg-[#F3EFEA] border border-[#D6CFC5] rounded-lg hover:bg-[#EAE4DC] disabled:opacity-60 transition-colors cursor-pointer whitespace-nowrap shrink-0"
           >
             <Sparkles className="w-3.5 h-3.5 text-[#9A3412]" />
@@ -261,3 +352,4 @@ export default function VerificationAndEditorialPanel({
     </div>
   );
 }
+

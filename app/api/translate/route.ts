@@ -21,6 +21,7 @@ export async function POST(req: NextRequest) {
           genre: body.genre || 'Literary Fiction',
           existingCharacters: body.existingCharacters || [],
           existingTerminology: body.existingTerminology || [],
+          existingStoryContext: body.existingStoryContext || null,
         });
         return NextResponse.json(result);
       }
@@ -45,7 +46,10 @@ export async function POST(req: NextRequest) {
           terminology: body.terminology || [],
           styleControls: body.styleControls,
         });
-        return NextResponse.json({ translatedParagraphs });
+        return NextResponse.json({
+          translatedParagraphs,
+          discoveredTerms: translatedParagraphs.discoveredTerms ?? [],
+        });
       }
 
       case 'stage4_editing': {

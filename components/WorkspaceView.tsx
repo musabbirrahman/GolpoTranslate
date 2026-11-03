@@ -33,11 +33,11 @@ import type {
   TranslationProject,
   TranslationStyleControls,
   VerificationIssue,
+  VerificationReport,
 } from '@/lib/types';
 import {
   alignParagraphs,
   applyContinuousBanglaEdit,
-  applyStage4EditsToParagraphs,
   assembleTranslatedChunks,
   canEditContinuousBangla,
   chunkTextByParagraphs,
@@ -53,6 +53,20 @@ import {
   splitIntoParagraphs,
   updateParagraphTranslation,
 } from '@/lib/chunker';
+import {
+  computeParagraphContentFingerprint,
+  extractEnglishSurfaceAndSense,
+  findEnglishTermOccurrences,
+  hydrateProjectGlossary,
+  mapSnapshotParagraphsToLatest,
+  normalizeBanglaUnicode,
+  normalizeEnglishTerm,
+  reconcileStage1ResultWithLatestState,
+  reconcileStage3ChunkGlossaryWithLatestState,
+  reconcileStage4ResultWithLatestState,
+  reconcileStage5ResultWithLatestState,
+  reconcileVerificationReportAfterLocalEdit,
+} from '@/lib/terminology';
 import VoiceAndControlsPanel from './VoiceAndControlsPanel';
 import ContextAndMemoryPanel from './ContextAndMemoryPanel';
 import VerificationAndEditorialPanel from './VerificationAndEditorialPanel';
@@ -79,6 +93,147 @@ interface WorkspaceViewProps {
 
 type WorkspaceSubTab = 'manuscript' | 'voice' | 'memory' | 'verification';
 type EditorViewMode = 'paragraphs' | 'continuous';
+
+interface ActiveParagraphRefinementRequest {
+  reqId: number;
+  chapterId: string;
+  snapshotParagraphs: ParagraphPair[];
+  snapshotIndex: number;
+  snapshotTargetFp: string;
+  isDuplicateEnglishInSnapshot: boolean;
+}
+
+const BANGLA_SCRIPT_CHECK_RE = /[\u0980-\u09FF]/;
+const PARTIAL_OR_DET_SUMMARY_PREFIX_RE =
+  /^(\[Partial Verification|Deterministic terminology check)/i;
+
+function normalizeStringListForRuleDiff(
+  list: ReadonlyArray<string> | undefined,
+  normalizer: (val: string) => string
+): string {
+  if (!Array.isArray(list) || list.length === 0) return '';
+  return [...list]
+    .map((item) => normalizer(item ?? ''))
+    .filter(Boolean)
+    .sort()
+    .join('\u0001');
+}
+
+function hasVerificationRelevantGlossaryRuleChanged(
+  a: TerminologyMemoryItem,
+  b: TerminologyMemoryItem
+): boolean {
+  if (normalizeEnglishTerm(a.englishTerm) !== normalizeEnglishTerm(b.englishTerm)) {
+    return true;
+  }
+  if (
+    normalizeBanglaUnicode(a.banglaTranslation) !==
+    normalizeBanglaUnicode(b.banglaTranslation)
+  ) {
+    return true;
+  }
+  if (
+    normalizeStringListForRuleDiff(a.acceptedAlternatives, normalizeBanglaUnicode) !==
+    normalizeStringListForRuleDiff(b.acceptedAlternatives, normalizeBanglaUnicode)
+  ) {
+    return true;
+  }
+  if (
+    normalizeStringListForRuleDiff(a.avoidTranslations, normalizeBanglaUnicode) !==
+    normalizeStringListForRuleDiff(b.avoidTranslations, normalizeBanglaUnicode)
+  ) {
+    return true;
+  }
+  if (Boolean(a.lockedByUser) !== Boolean(b.lockedByUser)) {
+    return true;
+  }
+  if (a.category !== b.category) {
+    return true;
+  }
+  if (
+    normalizeEnglishTerm(a.contextMeaning ?? '') !==
+    normalizeEnglishTerm(b.contextMeaning ?? '')
+  ) {
+    return true;
+  }
+  if (Boolean(a.caseSensitive) !== Boolean(b.caseSensitive)) {
+    return true;
+  }
+  if (Boolean(a.isContextSensitive) !== Boolean(b.isContextSensitive)) {
+    return true;
+  }
+  if (
+    normalizeBanglaUnicode(a.banglaStem ?? '') !==
+    normalizeBanglaUnicode(b.banglaStem ?? '')
+  ) {
+    return true;
+  }
+  if (Boolean(a.allowInflections) !== Boolean(b.allowInflections)) {
+    return true;
+  }
+  return false;
+}
+
+function doesAiTerminologyIssueMatchChangedTerm(
+  issue: VerificationIssue,
+  changedTerm: TerminologyMemoryItem,
+  paragraphEnglishText?: string
+): boolean {
+  if (issue.termId) {
+    return issue.termId === changedTerm.id;
+  }
+
+  const { surfaceTerm } = extractEnglishSurfaceAndSense(changedTerm.englishTerm);
+  const normalizedSurface = normalizeEnglishTerm(surfaceTerm);
+  if (normalizedSurface) {
+    const matchesInExcerpt =
+      findEnglishTermOccurrences(issue.englishExcerpt ?? '', changedTerm).length > 0;
+    const matchesInDescription =
+      findEnglishTermOccurrences(issue.description ?? '', changedTerm).length > 0;
+    if (matchesInExcerpt || matchesInDescription) {
+      return true;
+    }
+
+    if (
+      paragraphEnglishText &&
+      findEnglishTermOccurrences(paragraphEnglishText, changedTerm).length > 0 &&
+      (issue.description ?? '').toLowerCase().includes(normalizedSurface.toLowerCase())
+    ) {
+      return true;
+    }
+  }
+
+  const banglaCandidates = [
+    changedTerm.banglaTranslation,
+    ...(changedTerm.acceptedAlternatives ?? []),
+    ...(changedTerm.avoidTranslations ?? []),
+  ]
+    .map((v) => normalizeBanglaUnicode(v ?? ''))
+    .filter((v) => v.length > 0);
+
+  const normBnExcerpt = normalizeBanglaUnicode(issue.banglaExcerpt ?? '');
+  const normDesc = normalizeBanglaUnicode(issue.description ?? '');
+
+  for (const candidate of banglaCandidates) {
+    if (
+      (normBnExcerpt && normBnExcerpt.includes(candidate)) ||
+      (normDesc && normDesc.includes(candidate))
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function ensureGlossaryPartialVerificationSummary(summary: string | undefined): string {
+  const trimmed = (summary ?? '').trim();
+  if (PARTIAL_OR_DET_SUMMARY_PREFIX_RE.test(trimmed)) {
+    return trimmed;
+  }
+  const base = trimmed || 'Verification completed.';
+  return `[Partial Verification — Glossary terminology rules were updated after Stage 5 verification; deterministic terminology checks were refreshed, but a Stage 5 re-run is required for full verification.] ${base}`;
+}
 
 const PARAGRAPH_REFINEMENT_OPTIONS: Array<{
   id: ParagraphRefinementAction;
@@ -125,9 +280,18 @@ export default function WorkspaceView({
 
   const lastTriggerRef = useRef<number>(0);
 
-  // Keep latest project ref for sequential pipeline steps
+  // Keep latest project ref for sequential pipeline steps and concurrent edits
   const projectRef = useRef<TranslationProject>(project);
-  projectRef.current = project;
+  useEffect(() => {
+    projectRef.current = project;
+  }, [project]);
+
+  // Stage 5 per-chapter request sequence counter (incremented ONLY when a new Stage 5 request starts)
+  const stage5RequestSeqByChapterRef = useRef<Record<string, number>>({});
+
+  // Movement-safe paragraph refinement request registry
+  const refineRequestSeqRef = useRef<number>(0);
+  const activeRefineRequestsRef = useRef<ActiveParagraphRefinementRequest[]>([]);
 
   const updateChapterInProject = (
     baseProject: TranslationProject,
@@ -147,13 +311,111 @@ export default function WorkspaceView({
     return nextProj;
   };
 
+  /**
+   * Applies a local paragraph edit, revert, or continuous edit to a chapter using `projectRef.current`,
+   * reconciling any existing `VerificationReport` via `reconcileVerificationReportAfterLocalEdit`
+   * and maintaining accurate `stageCompleted.verification` and `status` state.
+   */
+  const applyChapterLocalEditWithReconciliation = (
+    chapterId: string,
+    computeEdit: (existing: Chapter) => {
+      nextParagraphs: ParagraphPair[];
+      nextTranslatedText: string;
+      nextOriginalText?: string;
+    }
+  ): TranslationProject => {
+    const latestProj = projectRef.current;
+    return updateChapterInProject(latestProj, chapterId, (existing) => {
+      const previousParagraphs = existing.paragraphs.map((p) => ({ ...p }));
+      const { nextParagraphs, nextTranslatedText, nextOriginalText } =
+        computeEdit(existing);
+
+      const mapping = mapSnapshotParagraphsToLatest(
+        previousParagraphs,
+        nextParagraphs
+      );
+
+      const reconciledReport: VerificationReport | null =
+        existing.verificationReport
+          ? reconcileVerificationReportAfterLocalEdit({
+              previousReport: existing.verificationReport,
+              previousParagraphs,
+              latestParagraphs: nextParagraphs,
+              latestGlossary: latestProj.terminologyMemory,
+            })
+          : null;
+
+      const nextStageCompletedVerification = mapping.allParagraphsUnchanged
+        ? Boolean(
+            existing.stageCompleted.verification && reconciledReport?.isComplete
+          )
+        : false;
+
+      let nextStatus = existing.status;
+      if (nextStageCompletedVerification && reconciledReport) {
+        nextStatus = getPipelineCompletionState(
+          nextParagraphs,
+          reconciledReport.issues
+        ).chapterStatus;
+      } else if (
+        existing.stageCompleted.translation ||
+        existing.status === 'completed' ||
+        existing.status === 'needs_review' ||
+        nextParagraphs.some((p) => p.banglaText.trim().length > 0)
+      ) {
+        nextStatus = 'needs_review';
+      }
+
+      return {
+        ...existing,
+        ...(nextOriginalText !== undefined
+          ? { originalText: nextOriginalText }
+          : {}),
+        translatedText: nextTranslatedText,
+        paragraphs: nextParagraphs,
+        verificationReport: reconciledReport,
+        stageCompleted: {
+          ...existing.stageCompleted,
+          verification: nextStageCompletedVerification,
+        },
+        status: nextStatus,
+        updatedAt: new Date().toISOString(),
+      };
+    });
+  };
+
   // Stage 1: Literary Understanding & Character/Terminology Extraction
   const executeStage1 = async (currentProj = projectRef.current): Promise<TranslationProject> => {
+    const preRequestProj = projectRef.current ?? currentProj;
     const ch =
-      currentProj.chapters.find((c) => c.id === activeChapter.id) || currentProj.chapters[0];
+      preRequestProj.chapters.find((c) => c.id === activeChapter.id) ||
+      preRequestProj.chapters[0];
     if (!ch.originalText.trim()) {
       throw new Error('Original English text is empty. Please add English text first.');
     }
+
+    // 1. Capture pre-request project-state snapshot before starting Stage 1 request
+    const snapshotStoryContext: StoryContextProfile | null = preRequestProj.storyContext
+      ? {
+          ...preRequestProj.storyContext,
+          importantEvents: [...(preRequestProj.storyContext.importantEvents || [])],
+          locations: (preRequestProj.storyContext.locations || []).map((loc) => ({
+            ...loc,
+          })),
+        }
+      : null;
+    const snapshotCharacters: CharacterMemoryItem[] = (
+      preRequestProj.characterMemory || []
+    ).map((c) => ({ ...c }));
+    const snapshotGlossary: TerminologyMemoryItem[] = (
+      preRequestProj.terminologyMemory || []
+    ).map((t) => ({
+      ...t,
+      acceptedAlternatives: t.acceptedAlternatives
+        ? [...t.acceptedAlternatives]
+        : undefined,
+      avoidTranslations: t.avoidTranslations ? [...t.avoidTranslations] : undefined,
+    }));
 
     setErrorBanner(null);
     setRunningStage(1);
@@ -165,10 +427,11 @@ export default function WorkspaceView({
       body: JSON.stringify({
         operation: 'stage1_understanding',
         text: ch.originalText,
-        projectTitle: currentProj.title,
-        genre: currentProj.genre,
-        existingCharacters: currentProj.characterMemory,
-        existingTerminology: currentProj.terminologyMemory,
+        projectTitle: preRequestProj.title,
+        genre: preRequestProj.genre,
+        existingStoryContext: snapshotStoryContext,
+        existingCharacters: snapshotCharacters,
+        existingTerminology: snapshotGlossary,
       }),
     });
 
@@ -177,42 +440,42 @@ export default function WorkspaceView({
       throw new Error(data.error || 'Stage 1 Literary Understanding failed');
     }
 
-    // Merge newly extracted characters and terminology without duplicating existing entries
-    const existingCharNames = new Set(
-      currentProj.characterMemory.map((c) => c.englishName.toLowerCase())
-    );
-    const mergedCharacters: CharacterMemoryItem[] = [
-      ...currentProj.characterMemory,
-      ...(data.extractedCharacters || []).filter(
-        (c: CharacterMemoryItem) =>
-          c.englishName && !existingCharNames.has(c.englishName.toLowerCase())
-      ),
-    ];
+    // 2. Read authoritative latest project state from projectRef.current after async boundary
+    const latestProj = projectRef.current;
 
-    const existingTerms = new Set(
-      currentProj.terminologyMemory.map((t) => t.englishTerm.toLowerCase())
-    );
-    const mergedTerminology: TerminologyMemoryItem[] = [
-      ...currentProj.terminologyMemory,
-      ...(data.extractedTerminology || []).filter(
-        (t: TerminologyMemoryItem) =>
-          t.englishTerm && !existingTerms.has(t.englishTerm.toLowerCase())
-      ),
-    ];
+    // 3. Reconcile Stage 1 AI response against pre-request snapshot and latest state
+    const reconciledStage1 = reconcileStage1ResultWithLatestState({
+      snapshotStoryContext,
+      latestStoryContext: latestProj.storyContext,
+      candidateStoryContext: data.storyContext ?? null,
+      snapshotCharacters,
+      latestCharacters: latestProj.characterMemory,
+      extractedCharacters: Array.isArray(data.extractedCharacters)
+        ? data.extractedCharacters
+        : [],
+      snapshotGlossary,
+      latestGlossary: latestProj.terminologyMemory,
+      extractedTerminology: Array.isArray(data.extractedTerminology)
+        ? data.extractedTerminology
+        : [],
+    });
 
+    // 4. Apply reconciled story context, character memory, and terminology memory together
+    const now = new Date().toISOString();
     const updatedProj: TranslationProject = {
-      ...currentProj,
-      storyContext: data.storyContext || currentProj.storyContext,
-      characterMemory: mergedCharacters,
-      terminologyMemory: mergedTerminology,
-      updatedAt: new Date().toISOString(),
-      chapters: currentProj.chapters.map((item) =>
+      ...latestProj,
+      storyContext: reconciledStage1.storyContext,
+      characterMemory: reconciledStage1.characterMemory,
+      terminologyMemory: reconciledStage1.terminologyMemory,
+      updatedAt: now,
+      chapters: latestProj.chapters.map((item) =>
         item.id === ch.id
           ? {
               ...item,
               currentStage: 1,
               stageCompleted: { ...item.stageCompleted, understanding: true },
-              updatedAt: new Date().toISOString(),
+              ...(data.stage1Coverage ? { stage1Coverage: data.stage1Coverage } : {}),
+              updatedAt: now,
             }
           : item
       ),
@@ -226,7 +489,7 @@ export default function WorkspaceView({
       chapterId: ch.id,
       chapterTitle: ch.title,
       actionType: 'stage_1_understanding',
-      summary: `Extracted story context, ${mergedCharacters.length} characters, and ${mergedTerminology.length} glossary terms.`,
+      summary: `Extracted story context, ${reconciledStage1.characterMemory.length} characters, and ${reconciledStage1.terminologyMemory.length} glossary terms.`,
     });
 
     return updatedProj;
@@ -293,8 +556,9 @@ export default function WorkspaceView({
 
   // Stage 3: Faithful Literary Translation (Chunked & Context-Aware)
   const executeStage3 = async (currentProj = projectRef.current): Promise<TranslationProject> => {
+    const initialProj = projectRef.current ?? currentProj;
     const ch =
-      currentProj.chapters.find((c) => c.id === activeChapter.id) || currentProj.chapters[0];
+      initialProj.chapters.find((c) => c.id === activeChapter.id) || initialProj.chapters[0];
     const englishParagraphs = splitIntoParagraphs(ch.originalText);
     if (englishParagraphs.length === 0) {
       throw new Error('Original English text has no paragraphs to translate.');
@@ -304,7 +568,7 @@ export default function WorkspaceView({
     setPipelineBannerTone('success');
     setRunningStage(3);
 
-    const preStage3Pairs = ch.paragraphs;
+    const preStage3Pairs = ch.paragraphs.map((p) => ({ ...p }));
 
     const chunks = chunkTextByParagraphs(
       ch.originalText,
@@ -321,6 +585,19 @@ export default function WorkspaceView({
         `Stage 3/5: Translating chunk ${i + 1} of ${chunks.length} (${chunk.paragraphs.length} paragraphs) using Author Style Profile & Memory...`
       );
 
+      // 1. Capture a fresh glossary snapshot immediately before each individual chunk request
+      const chunkStartProj = projectRef.current;
+      const chunkGlossarySnapshot: TerminologyMemoryItem[] = (
+        chunkStartProj.terminologyMemory || []
+      ).map((t) => ({
+        ...t,
+        acceptedAlternatives: t.acceptedAlternatives
+          ? [...t.acceptedAlternatives]
+          : undefined,
+        avoidTranslations: t.avoidTranslations ? [...t.avoidTranslations] : undefined,
+      }));
+
+      // 2. Pass that snapshot as the glossary used for the corresponding server request
       const res = await fetch('/api/translate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -328,11 +605,11 @@ export default function WorkspaceView({
           operation: 'stage3_translate_chunk',
           paragraphs: chunk.paragraphs,
           previousContextParagraphs: chunk.previousContextParagraphs,
-          styleProfile: currentProj.styleProfile,
-          storyContext: currentProj.storyContext,
-          characters: currentProj.characterMemory,
-          terminology: currentProj.terminologyMemory,
-          styleControls: currentProj.styleControls,
+          styleProfile: chunkStartProj.styleProfile,
+          storyContext: chunkStartProj.storyContext,
+          characters: chunkStartProj.characterMemory,
+          terminology: chunkGlossarySnapshot,
+          styleControls: chunkStartProj.styleControls,
         }),
       });
 
@@ -346,30 +623,67 @@ export default function WorkspaceView({
         : [];
       translatedChunks.push(rawChunkOutput);
 
+      // 3. Read latest project and glossary from projectRef.current after async boundary
+      const latestAfterChunk = projectRef.current;
+      const existingCh =
+        latestAfterChunk.chapters.find((item) => item.id === ch.id) || ch;
+
       // Update partial chunk progress strictly within active chunk bounds [chunk.startParagraphIndex .. chunk.endParagraphIndex]
       // while preserving existing translations and refinement metadata outside the active chunk
       // and passing prevChunkLastBangla so echoed boundary paragraphs are stripped immediately.
-      let nextChunkLastBangla = prevChunkLastBangla;
-      updateChapterInProject(projectRef.current, ch.id, (existing) => {
-        const partial = mergeStage3ChunkProgress(
-          englishParagraphs,
-          existing.paragraphs,
-          chunk,
-          rawChunkOutput,
-          prevChunkLastBangla
-        );
-        nextChunkLastBangla = partial.lastNonEmptyBangla;
-        return {
-          ...existing,
-          status: 'in_progress',
-          currentStage: 3,
-          chunkCount: chunks.length,
-          completedChunks: i + 1,
-          translatedText: partial.fullBanglaText,
-          paragraphs: partial.pairs,
-          updatedAt: new Date().toISOString(),
-        };
+      const partial = mergeStage3ChunkProgress(
+        englishParagraphs,
+        existingCh.paragraphs,
+        chunk,
+        rawChunkOutput,
+        prevChunkLastBangla
+      );
+      const nextChunkLastBangla = partial.lastNonEmptyBangla;
+
+      // 4. Pass snapshot, returned discoveredTerms, latest glossary, source chunk text,
+      // and aligned Bangla chunk text into the orchestrator
+      const chunkSourceText = chunk.paragraphs.join('\n\n');
+      const alignedChunkBanglaText = partial.pairs
+        .slice(chunk.startParagraphIndex, chunk.endParagraphIndex + 1)
+        .map((p) => p.banglaText)
+        .join('\n\n');
+      const discoveredTerms: Partial<TerminologyMemoryItem>[] = Array.isArray(
+        data.discoveredTerms
+      )
+        ? data.discoveredTerms
+        : [];
+
+      const reconciledChunkGlossary = reconcileStage3ChunkGlossaryWithLatestState({
+        snapshotGlossary: chunkGlossarySnapshot,
+        discoveredCandidates: discoveredTerms,
+        latestGlossary: latestAfterChunk.terminologyMemory,
+        chunkSourceText,
+        chunkBanglaText: alignedChunkBanglaText,
       });
+
+      // 5. Persist the reconciled glossary and partial chunk progress before proceeding to the next chunk
+      const chunkCompletedAt = new Date().toISOString();
+      const nextChunkProj: TranslationProject = {
+        ...latestAfterChunk,
+        terminologyMemory: reconciledChunkGlossary.terminologyMemory,
+        updatedAt: chunkCompletedAt,
+        chapters: latestAfterChunk.chapters.map((item) =>
+          item.id === ch.id
+            ? {
+                ...item,
+                status: 'in_progress',
+                currentStage: 3,
+                chunkCount: chunks.length,
+                completedChunks: i + 1,
+                translatedText: partial.fullBanglaText,
+                paragraphs: partial.pairs,
+                updatedAt: chunkCompletedAt,
+              }
+            : item
+        ),
+      };
+      projectRef.current = nextChunkProj;
+      onUpdateProject(nextChunkProj);
       prevChunkLastBangla = nextChunkLastBangla;
     }
 
@@ -380,18 +694,39 @@ export default function WorkspaceView({
       preStage3Pairs
     );
 
-    const updatedProj = updateChapterInProject(projectRef.current, ch.id, (existing) => ({
-      ...existing,
-      translatedText: fullBanglaText,
-      draftTranslatedText: fullBanglaText,
-      paragraphs: pairs,
-      status: 'needs_review',
-      currentStage: 3,
-      chunkCount: chunks.length,
-      completedChunks: chunks.length,
-      stageCompleted: { ...existing.stageCompleted, translation: true },
-      updatedAt: new Date().toISOString(),
-    }));
+    const latestAtStage3End = projectRef.current;
+    const updatedProj = updateChapterInProject(latestAtStage3End, ch.id, (existing) => {
+      const mapping = mapSnapshotParagraphsToLatest(preStage3Pairs, pairs);
+      const reconciledReport = existing.verificationReport
+        ? reconcileVerificationReportAfterLocalEdit({
+            previousReport: existing.verificationReport,
+            previousParagraphs: preStage3Pairs,
+            latestParagraphs: pairs,
+            latestGlossary: latestAtStage3End.terminologyMemory,
+          })
+        : null;
+      const keepVerificationComplete =
+        mapping.allParagraphsUnchanged &&
+        Boolean(existing.stageCompleted.verification && reconciledReport?.isComplete);
+
+      return {
+        ...existing,
+        translatedText: fullBanglaText,
+        draftTranslatedText: fullBanglaText,
+        paragraphs: pairs,
+        verificationReport: reconciledReport,
+        status: 'needs_review',
+        currentStage: 3,
+        chunkCount: chunks.length,
+        completedChunks: chunks.length,
+        stageCompleted: {
+          ...existing.stageCompleted,
+          translation: true,
+          verification: keepVerificationComplete,
+        },
+        updatedAt: new Date().toISOString(),
+      };
+    });
 
     onLogHistory({
       projectId: updatedProj.id,
@@ -410,14 +745,40 @@ export default function WorkspaceView({
 
   // Stage 4: Literary Editing Pass
   const executeStage4 = async (currentProj = projectRef.current): Promise<TranslationProject> => {
+    const preRequestProj = projectRef.current ?? currentProj;
     const ch =
-      currentProj.chapters.find((c) => c.id === activeChapter.id) || currentProj.chapters[0];
-    const engParagraphs = ch.paragraphs.map((p) => p.englishText);
-    const bnParagraphs = ch.paragraphs.map((p) => p.banglaText);
+      preRequestProj.chapters.find((c) => c.id === activeChapter.id) ||
+      preRequestProj.chapters[0];
+    const targetChapterId = ch.id;
+    const targetChapterTitle = ch.title;
+
+    // 1. Snapshot target chapter paragraph pairs and relevant project memory before request
+    const snapshotParagraphs: ParagraphPair[] = ch.paragraphs.map((p) => ({ ...p }));
+    const engParagraphs = snapshotParagraphs.map((p) => p.englishText);
+    const bnParagraphs = snapshotParagraphs.map((p) => p.banglaText);
 
     if (bnParagraphs.every((b) => !b.trim())) {
       throw new Error('Please run Stage 3 Translation before running Stage 4 Literary Editing.');
     }
+
+    const snapshotCharacters: CharacterMemoryItem[] = (
+      preRequestProj.characterMemory || []
+    ).map((c) => ({ ...c }));
+    const snapshotGlossary: TerminologyMemoryItem[] = (
+      preRequestProj.terminologyMemory || []
+    ).map((t) => ({
+      ...t,
+      acceptedAlternatives: t.acceptedAlternatives
+        ? [...t.acceptedAlternatives]
+        : undefined,
+      avoidTranslations: t.avoidTranslations ? [...t.avoidTranslations] : undefined,
+    }));
+    const snapshotStyleProfile: StyleProfile | null = preRequestProj.styleProfile
+      ? { ...preRequestProj.styleProfile }
+      : null;
+    const snapshotStyleControls: TranslationStyleControls = {
+      ...preRequestProj.styleControls,
+    };
 
     setErrorBanner(null);
     setRunningStage(4);
@@ -432,10 +793,10 @@ export default function WorkspaceView({
         operation: 'stage4_editing',
         englishParagraphs: engParagraphs,
         banglaParagraphs: bnParagraphs,
-        styleProfile: currentProj.styleProfile,
-        characters: currentProj.characterMemory,
-        terminology: currentProj.terminologyMemory,
-        styleControls: currentProj.styleControls,
+        styleProfile: snapshotStyleProfile,
+        characters: snapshotCharacters,
+        terminology: snapshotGlossary,
+        styleControls: snapshotStyleControls,
       }),
     });
 
@@ -444,35 +805,60 @@ export default function WorkspaceView({
       throw new Error(data.error || 'Stage 4 Literary Editing failed');
     }
 
-    const editedList: string[] = data.editedParagraphs || bnParagraphs;
-    const newPairs: ParagraphPair[] = applyStage4EditsToParagraphs(
-      ch.paragraphs,
-      editedList
-    );
+    // 2. Read authoritative latest project state from projectRef.current after async boundary
+    const latestProj = projectRef.current;
+    const latestChapter = latestProj.chapters.find((c) => c.id === targetChapterId);
+    if (!latestChapter) {
+      return latestProj;
+    }
 
-    const fullBangla = joinParagraphsWithSceneBreaks(newPairs, {
-      field: 'banglaText',
-      omitEmpty: true,
+    // 3. Reconcile Stage 4 output against snapshot and latest paragraphs/glossary/verification report
+    const reconciledStage4 = reconcileStage4ResultWithLatestState({
+      snapshotParagraphs,
+      latestParagraphs: latestChapter.paragraphs,
+      editedParagraphs: Array.isArray(data.editedParagraphs)
+        ? data.editedParagraphs
+        : bnParagraphs,
+      editorialNotes: Array.isArray(data.editorialNotes) ? data.editorialNotes : [],
+      editorialChanges: Array.isArray(data.editorialChanges)
+        ? data.editorialChanges
+        : [],
+      latestGlossary: latestProj.terminologyMemory,
+      latestVerificationReport: latestChapter.verificationReport,
+      wasVerificationCompleted: latestChapter.stageCompleted.verification,
     });
 
-    const updatedProj = updateChapterInProject(currentProj, ch.id, (existing) => ({
-      ...existing,
-      translatedText: fullBangla,
-      paragraphs: newPairs,
-      currentStage: 4,
-      editorialNotes: data.editorialNotes || [],
-      editorialChanges: data.editorialChanges || [],
-      stageCompleted: { ...existing.stageCompleted, editing: true },
-      updatedAt: new Date().toISOString(),
-    }));
+    const updatedProj = updateChapterInProject(
+      latestProj,
+      targetChapterId,
+      (existing) => ({
+        ...existing,
+        translatedText: reconciledStage4.translatedText,
+        paragraphs: reconciledStage4.paragraphs,
+        currentStage: 4,
+        editorialNotes: reconciledStage4.editorialNotes,
+        editorialChanges: reconciledStage4.editorialChanges,
+        verificationReport: reconciledStage4.verificationReport,
+        status: reconciledStage4.chapterStatus,
+        stageCompleted: {
+          ...existing.stageCompleted,
+          editing: true,
+          verification: reconciledStage4.stageCompletedVerification,
+        },
+        updatedAt: new Date().toISOString(),
+      })
+    );
 
     onLogHistory({
       projectId: updatedProj.id,
       projectTitle: updatedProj.title,
-      chapterId: ch.id,
-      chapterTitle: ch.title,
+      chapterId: targetChapterId,
+      chapterTitle: targetChapterTitle,
       actionType: 'stage_4_editing',
-      summary: `Completed Stage 4 Literary Editing with ${(data.editorialChanges || []).length} stylistic improvements.`,
+      summary:
+        reconciledStage4.preservedInFlightParagraphIndices.length > 0
+          ? `Completed Stage 4 Literary Editing (${reconciledStage4.editorialChanges.length} stylistic improvements applied; ${reconciledStage4.preservedInFlightParagraphIndices.length} paragraph(s) edited in flight preserved).`
+          : `Completed Stage 4 Literary Editing with ${reconciledStage4.editorialChanges.length} stylistic improvements.`,
     });
 
     return updatedProj;
@@ -480,14 +866,39 @@ export default function WorkspaceView({
 
   // Stage 5: Accuracy Verification
   const executeStage5 = async (currentProj = projectRef.current): Promise<TranslationProject> => {
+    const preRequestProj = projectRef.current ?? currentProj;
     const ch =
-      currentProj.chapters.find((c) => c.id === activeChapter.id) || currentProj.chapters[0];
-    const engParagraphs = ch.paragraphs.map((p) => p.englishText);
-    const bnParagraphs = ch.paragraphs.map((p) => p.banglaText);
+      preRequestProj.chapters.find((c) => c.id === activeChapter.id) ||
+      preRequestProj.chapters[0];
+    const targetChapterId = ch.id;
+    const targetChapterTitle = ch.title;
+
+    // 1. Snapshot target chapter paragraphs and memory before starting Stage 5 request
+    const snapshotParagraphs: ParagraphPair[] = ch.paragraphs.map((p) => ({ ...p }));
+    const engParagraphs = snapshotParagraphs.map((p) => p.englishText);
+    const bnParagraphs = snapshotParagraphs.map((p) => p.banglaText);
 
     if (bnParagraphs.every((b) => !b.trim())) {
       throw new Error('Please translate the chapter before running Accuracy Verification.');
     }
+
+    const snapshotCharacters: CharacterMemoryItem[] = (
+      preRequestProj.characterMemory || []
+    ).map((c) => ({ ...c }));
+    const snapshotGlossary: TerminologyMemoryItem[] = (
+      preRequestProj.terminologyMemory || []
+    ).map((t) => ({
+      ...t,
+      acceptedAlternatives: t.acceptedAlternatives
+        ? [...t.acceptedAlternatives]
+        : undefined,
+      avoidTranslations: t.avoidTranslations ? [...t.avoidTranslations] : undefined,
+    }));
+
+    // 2. Increment Stage 5 sequence counter exclusively when a new Stage 5 request starts for this chapter
+    const requestSeq =
+      (stage5RequestSeqByChapterRef.current[targetChapterId] ?? 0) + 1;
+    stage5RequestSeqByChapterRef.current[targetChapterId] = requestSeq;
 
     setErrorBanner(null);
     setRunningStage(5);
@@ -502,8 +913,8 @@ export default function WorkspaceView({
         operation: 'stage5_verification',
         englishParagraphs: engParagraphs,
         banglaParagraphs: bnParagraphs,
-        characters: currentProj.characterMemory,
-        terminology: currentProj.terminologyMemory,
+        characters: snapshotCharacters,
+        terminology: snapshotGlossary,
       }),
     });
 
@@ -512,33 +923,51 @@ export default function WorkspaceView({
       throw new Error(data.error || 'Stage 5 Accuracy Verification failed');
     }
 
-    const report = data.report;
-    const hasUnresolvedHighIssues = (report?.issues || []).some(
-      (i: VerificationIssue) => i.severity === 'high' && !i.resolved
-    );
+    // 3. Discard response ONLY if a newer Stage 5 request for the same chapter superseded this request
+    if (stage5RequestSeqByChapterRef.current[targetChapterId] !== requestSeq) {
+      return projectRef.current;
+    }
 
-    const updatedProj = updateChapterInProject(currentProj, ch.id, (existing) => {
-      const completionState = getPipelineCompletionState(
-        existing.paragraphs,
-        hasUnresolvedHighIssues
-      );
-      return {
+    // 4. Read authoritative latest project state from projectRef.current and reconcile via reconcileStage5ResultWithLatestState
+    const latestProj = projectRef.current;
+    const latestChapter = latestProj.chapters.find((c) => c.id === targetChapterId);
+    if (!latestChapter) {
+      return latestProj;
+    }
+
+    const reconciledStage5 = reconcileStage5ResultWithLatestState({
+      snapshotParagraphs,
+      latestParagraphs: latestChapter.paragraphs,
+      aiReport: data.report,
+      latestGlossary: latestProj.terminologyMemory,
+      previousVerificationReport: latestChapter.verificationReport,
+    });
+
+    const updatedProj = updateChapterInProject(
+      latestProj,
+      targetChapterId,
+      (existing) => ({
         ...existing,
         currentStage: 5,
-        verificationReport: report,
-        status: completionState.chapterStatus,
-        stageCompleted: { ...existing.stageCompleted, verification: true },
+        verificationReport: reconciledStage5.verificationReport,
+        status: reconciledStage5.chapterStatus,
+        stageCompleted: {
+          ...existing.stageCompleted,
+          verification: reconciledStage5.stageCompletedVerification,
+        },
         updatedAt: new Date().toISOString(),
-      };
-    });
+      })
+    );
 
     onLogHistory({
       projectId: updatedProj.id,
       projectTitle: updatedProj.title,
-      chapterId: ch.id,
-      chapterTitle: ch.title,
+      chapterId: targetChapterId,
+      chapterTitle: targetChapterTitle,
       actionType: 'stage_5_verification',
-      summary: `Accuracy Verification Score: ${report?.overallScore ?? 96}% (${(report?.issues || []).length} items flagged).`,
+      summary: reconciledStage5.allParagraphsVerified
+        ? `Accuracy Verification Score: ${reconciledStage5.verificationReport.overallScore}% (${reconciledStage5.verificationReport.issues.length} items flagged).`
+        : `Partial Accuracy Verification (${reconciledStage5.verifiedParagraphIndices.length}/${latestChapter.paragraphs.length} paragraphs verified; ${reconciledStage5.unverifiedParagraphIndices.length} changed in flight require re-verification).`,
     });
 
     return updatedProj;
@@ -578,10 +1007,17 @@ export default function WorkspaceView({
         hasUnresolvedHigh
       );
 
-      setPipelineBannerTone(completion.bannerTone);
-      setPipelineBanner(completion.bannerMessage);
-      if (completion.isComplete) {
-        setTimeout(() => setPipelineBanner(null), 5000);
+      if (!finalCh.stageCompleted.verification) {
+        setPipelineBannerTone('warning');
+        setPipelineBanner(
+          'Pipeline finished with partial verification because paragraphs or glossary rules changed during verification. Re-run Stage 5 to verify all paragraphs.'
+        );
+      } else {
+        setPipelineBannerTone(completion.bannerTone);
+        setPipelineBanner(completion.bannerMessage);
+        if (completion.isComplete) {
+          setTimeout(() => setPipelineBanner(null), 5000);
+        }
       }
     } catch (err: unknown) {
       setErrorBanner(
@@ -605,20 +1041,76 @@ export default function WorkspaceView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRunPipelineTrigger]);
 
-  // Individual Paragraph Refinement Handler
+  // Individual Paragraph Refinement Handler (Movement-Safe Sequencing & Fingerprint Guard)
   const handleRefineParagraph = async (
     paragraphIndex: number,
     action: ParagraphRefinementAction
   ) => {
-    const pair = activeChapter.paragraphs[paragraphIndex];
+    const preRequestProj = projectRef.current;
+    const ch =
+      preRequestProj.chapters.find((c) => c.id === activeChapter.id) ||
+      preRequestProj.chapters[0];
+    const targetChapterId = ch.id;
+    const targetChapterTitle = ch.title;
+
+    const snapshotParagraphs: ParagraphPair[] = ch.paragraphs.map((p) => ({ ...p }));
+    const pair = snapshotParagraphs[paragraphIndex];
     if (!pair) return;
+
+    const snapshotTargetFp = computeParagraphContentFingerprint(
+      pair.englishText,
+      pair.banglaText
+    );
+    const normTargetEn = normalizeEnglishTerm(pair.englishText);
+    const isDuplicateEnglishInSnapshot =
+      snapshotParagraphs.filter(
+        (p) => normalizeEnglishTerm(p.englishText) === normTargetEn
+      ).length > 1;
+
+    // Supersede any older in-flight refinement request for the same underlying paragraph,
+    // even if an insertion or deletion shifted its index between the two requests.
+    const reqId = ++refineRequestSeqRef.current;
+    activeRefineRequestsRef.current = activeRefineRequestsRef.current.filter(
+      (oldReq) => {
+        if (oldReq.chapterId !== targetChapterId) {
+          return true;
+        }
+        const mapOldToCurrent = mapSnapshotParagraphsToLatest(
+          oldReq.snapshotParagraphs,
+          snapshotParagraphs
+        );
+        const oldMappedToCurrentIdx = mapOldToCurrent.snapToLatestIndex.get(
+          oldReq.snapshotIndex
+        );
+        if (oldMappedToCurrentIdx === paragraphIndex) {
+          return false; // Superseded: same mapped paragraph slot
+        }
+        if (
+          !isDuplicateEnglishInSnapshot &&
+          !oldReq.isDuplicateEnglishInSnapshot &&
+          oldReq.snapshotTargetFp === snapshotTargetFp
+        ) {
+          return false; // Superseded: unique paragraph with identical content fingerprint
+        }
+        return true;
+      }
+    );
+
+    activeRefineRequestsRef.current.push({
+      reqId,
+      chapterId: targetChapterId,
+      snapshotParagraphs,
+      snapshotIndex: paragraphIndex,
+      snapshotTargetFp,
+      isDuplicateEnglishInSnapshot,
+    });
 
     setErrorBanner(null);
     setRefiningParagraphIdx(paragraphIndex);
 
     try {
-      const prevEng = activeChapter.paragraphs[paragraphIndex - 1]?.englishText;
-      const nextEng = activeChapter.paragraphs[paragraphIndex + 1]?.englishText;
+      const prevEng = snapshotParagraphs[paragraphIndex - 1]?.englishText;
+      const nextEng = snapshotParagraphs[paragraphIndex + 1]?.englishText;
 
       const res = await fetch('/api/translate', {
         method: 'POST',
@@ -631,10 +1123,10 @@ export default function WorkspaceView({
           nextEnglishParagraph: nextEng,
           action,
           customInstruction: customParagraphNote.trim() || undefined,
-          styleProfile: project.styleProfile,
-          characters: project.characterMemory,
-          terminology: project.terminologyMemory,
-          styleControls: project.styleControls,
+          styleProfile: preRequestProj.styleProfile,
+          characters: preRequestProj.characterMemory,
+          terminology: preRequestProj.terminologyMemory,
+          styleControls: preRequestProj.styleControls,
         }),
       });
 
@@ -643,88 +1135,147 @@ export default function WorkspaceView({
         throw new Error(data.error || 'Paragraph refinement failed');
       }
 
-      const newPairs = activeChapter.paragraphs.map((item, idx) =>
-        idx === paragraphIndex
-          ? updateParagraphTranslation(item, data.refinedBangla, {
-              previousBanglaText: item.banglaText,
-              lastRefinementAction: action,
-              refinementRationale: data.rationale,
-              markEmptyAsMissing: true,
-            })
-          : item
+      // Check if this request is still active (not superseded by a newer request for the same paragraph)
+      const stillActive = activeRefineRequestsRef.current.some(
+        (r) => r.reqId === reqId
+      );
+      if (!stillActive) {
+        return;
+      }
+      activeRefineRequestsRef.current = activeRefineRequestsRef.current.filter(
+        (r) => r.reqId !== reqId
       );
 
-      const fullBangla = joinParagraphsWithSceneBreaks(newPairs, {
-        field: 'banglaText',
-        omitEmpty: true,
-      });
+      const latestProj = projectRef.current;
+      const latestChapter = latestProj.chapters.find((c) => c.id === targetChapterId);
+      if (!latestChapter) {
+        return;
+      }
 
-      updateChapterInProject(project, activeChapter.id, (existing) => ({
-        ...existing,
-        translatedText: fullBangla,
-        paragraphs: newPairs,
-        status: existing.stageCompleted.verification
-          ? getPipelineCompletionState(
-              newPairs,
-              existing.verificationReport?.issues || []
-            ).chapterStatus
-          : existing.status,
-        updatedAt: new Date().toISOString(),
-      }));
+      const mapping = mapSnapshotParagraphsToLatest(
+        snapshotParagraphs,
+        latestChapter.paragraphs
+      );
+      const mappedLatestIdx = mapping.snapToLatestIndex.get(paragraphIndex);
+      const isDuplicateEnglishInLatest =
+        latestChapter.paragraphs.filter(
+          (p) => normalizeEnglishTerm(p.englishText) === normTargetEn
+        ).length > 1;
+
+      const rejectedAmbiguousDuplicate =
+        (isDuplicateEnglishInSnapshot || isDuplicateEnglishInLatest) &&
+        mapping.hasStructuralChange;
+
+      const latestTargetPair =
+        mappedLatestIdx !== undefined
+          ? latestChapter.paragraphs[mappedLatestIdx]
+          : undefined;
+      const latestTargetFp = latestTargetPair
+        ? computeParagraphContentFingerprint(
+            latestTargetPair.englishText,
+            latestTargetPair.banglaText
+          )
+        : '';
+
+      if (
+        rejectedAmbiguousDuplicate ||
+        mappedLatestIdx === undefined ||
+        !mapping.unchangedLatestIndices.has(mappedLatestIdx) ||
+        !latestTargetPair ||
+        latestTargetFp !== snapshotTargetFp
+      ) {
+        setPipelineBannerTone('warning');
+        setPipelineBanner(
+          `Paragraph #${paragraphIndex + 1} was modified or moved while refinement was running; your latest text was preserved.`
+        );
+        return;
+      }
+
+      const updatedProj = applyChapterLocalEditWithReconciliation(
+        targetChapterId,
+        (existing) => {
+          const newPairs = existing.paragraphs.map((item, idx) =>
+            idx === mappedLatestIdx
+              ? updateParagraphTranslation(item, data.refinedBangla, {
+                  previousBanglaText: item.banglaText,
+                  lastRefinementAction: action,
+                  refinementRationale: data.rationale,
+                  markEmptyAsMissing: true,
+                })
+              : item
+          );
+          const fullBangla = joinParagraphsWithSceneBreaks(newPairs, {
+            field: 'banglaText',
+            omitEmpty: true,
+          });
+          return {
+            nextParagraphs: newPairs,
+            nextTranslatedText: fullBangla,
+          };
+        }
+      );
 
       onLogHistory({
-        projectId: project.id,
-        projectTitle: project.title,
-        chapterId: activeChapter.id,
-        chapterTitle: activeChapter.title,
+        projectId: updatedProj.id,
+        projectTitle: updatedProj.title,
+        chapterId: targetChapterId,
+        chapterTitle: targetChapterTitle,
         actionType: 'paragraph_refinement',
-        summary: `Refined Paragraph ${paragraphIndex + 1} (${action.replace(/_/g, ' ')}): ${data.rationale}`,
-        paragraphIndex,
-        previousText: pair.banglaText,
+        summary: `Refined Paragraph ${mappedLatestIdx + 1} (${action.replace(/_/g, ' ')}): ${data.rationale}`,
+        paragraphIndex: mappedLatestIdx,
+        previousText: latestTargetPair.banglaText,
         newText: data.refinedBangla,
       });
 
       setCustomParagraphNote('');
     } catch (err: unknown) {
+      activeRefineRequestsRef.current = activeRefineRequestsRef.current.filter(
+        (r) => r.reqId !== reqId
+      );
       setErrorBanner(
         err instanceof Error ? err.message : 'Could not refine paragraph.'
       );
     } finally {
-      setRefiningParagraphIdx(null);
+      if (activeRefineRequestsRef.current.length === 0) {
+        setRefiningParagraphIdx(null);
+      }
     }
   };
 
   // Manual edit of a single Bangla paragraph
   const handleManualParagraphChange = (paragraphIndex: number, newBangla: string) => {
-    const newPairs = activeChapter.paragraphs.map((item, idx) =>
-      idx === paragraphIndex
-        ? updateParagraphTranslation(item, newBangla, {
-            lastRefinementAction: 'manual_edit',
-          })
-        : item
-    );
-    const fullBangla = joinParagraphsWithSceneBreaks(newPairs, {
-      field: 'banglaText',
-      omitEmpty: true,
+    applyChapterLocalEditWithReconciliation(activeChapter.id, (existing) => {
+      const newPairs = existing.paragraphs.map((item, idx) => {
+        if (idx !== paragraphIndex) return item;
+        const shouldCapturePrevious =
+          item.previousBanglaText === undefined ||
+          item.previousBanglaText === null ||
+          item.lastRefinementAction !== 'manual_edit';
+        return updateParagraphTranslation(item, newBangla, {
+          previousBanglaText: shouldCapturePrevious
+            ? item.banglaText
+            : item.previousBanglaText,
+          lastRefinementAction: 'manual_edit',
+        });
+      });
+      const fullBangla = joinParagraphsWithSceneBreaks(newPairs, {
+        field: 'banglaText',
+        omitEmpty: true,
+      });
+      return {
+        nextParagraphs: newPairs,
+        nextTranslatedText: fullBangla,
+      };
     });
-
-    updateChapterInProject(project, activeChapter.id, (existing) => ({
-      ...existing,
-      translatedText: fullBangla,
-      paragraphs: newPairs,
-      status: existing.stageCompleted.verification
-        ? getPipelineCompletionState(
-            newPairs,
-            existing.verificationReport?.issues || []
-          ).chapterStatus
-        : existing.status,
-      updatedAt: new Date().toISOString(),
-    }));
   };
 
   // Revert a single paragraph to its previous version
   const handleRevertParagraph = (paragraphIndex: number) => {
-    const pair = activeChapter.paragraphs[paragraphIndex];
+    const latestProj = projectRef.current;
+    const currentCh =
+      latestProj.chapters.find((c) => c.id === activeChapter.id) ||
+      latestProj.chapters[0];
+    const pair = currentCh?.paragraphs[paragraphIndex];
     if (
       !pair ||
       pair.previousBanglaText === undefined ||
@@ -733,59 +1284,46 @@ export default function WorkspaceView({
       return;
     }
 
-    const newPairs = activeChapter.paragraphs.map((item, idx) =>
-      idx === paragraphIndex ? revertParagraphTranslation(item) : item
-    );
-    const fullBangla = joinParagraphsWithSceneBreaks(newPairs, {
-      field: 'banglaText',
-      omitEmpty: true,
+    applyChapterLocalEditWithReconciliation(currentCh.id, (existing) => {
+      const newPairs = existing.paragraphs.map((item, idx) =>
+        idx === paragraphIndex ? revertParagraphTranslation(item) : item
+      );
+      const fullBangla = joinParagraphsWithSceneBreaks(newPairs, {
+        field: 'banglaText',
+        omitEmpty: true,
+      });
+      return {
+        nextParagraphs: newPairs,
+        nextTranslatedText: fullBangla,
+      };
     });
-
-    updateChapterInProject(project, activeChapter.id, (existing) => ({
-      ...existing,
-      translatedText: fullBangla,
-      paragraphs: newPairs,
-      status: existing.stageCompleted.verification
-        ? getPipelineCompletionState(
-            newPairs,
-            existing.verificationReport?.issues || []
-          ).chapterStatus
-        : existing.status,
-      updatedAt: new Date().toISOString(),
-    }));
   };
 
   // Continuous source or target text change
   const handleContinuousSourceChange = (newEnglish: string) => {
-    const aligned = alignParagraphs(
-      newEnglish,
-      '',
-      activeChapter.paragraphs
-    );
-    const syncedBangla = joinParagraphsWithSceneBreaks(aligned, {
-      field: 'banglaText',
-      omitEmpty: true,
+    applyChapterLocalEditWithReconciliation(activeChapter.id, (existing) => {
+      const aligned = alignParagraphs(newEnglish, '', existing.paragraphs);
+      const syncedBangla = joinParagraphsWithSceneBreaks(aligned, {
+        field: 'banglaText',
+        omitEmpty: true,
+      });
+      return {
+        nextOriginalText: newEnglish,
+        nextParagraphs: aligned,
+        nextTranslatedText: syncedBangla,
+      };
     });
-    updateChapterInProject(project, activeChapter.id, (existing) => ({
-      ...existing,
-      originalText: newEnglish,
-      translatedText: syncedBangla,
-      paragraphs: aligned,
-      status: existing.stageCompleted.verification
-        ? getPipelineCompletionState(
-            aligned,
-            existing.verificationReport?.issues || []
-          ).chapterStatus
-        : existing.status,
-      updatedAt: new Date().toISOString(),
-    }));
   };
 
   const handleContinuousBanglaChange = (newBangla: string) => {
+    const latestProj = projectRef.current;
+    const currentCh =
+      latestProj.chapters.find((c) => c.id === activeChapter.id) ||
+      latestProj.chapters[0];
     const result = applyContinuousBanglaEdit(
-      activeChapter.originalText,
+      currentCh.originalText,
       newBangla,
-      activeChapter.paragraphs
+      currentCh.paragraphs
     );
     if (!result.applied) {
       if (result.reason) {
@@ -793,11 +1331,9 @@ export default function WorkspaceView({
       }
       return;
     }
-    updateChapterInProject(project, activeChapter.id, (existing) => ({
-      ...existing,
-      translatedText: result.translatedText,
-      paragraphs: result.paragraphs,
-      updatedAt: new Date().toISOString(),
+    applyChapterLocalEditWithReconciliation(currentCh.id, () => ({
+      nextParagraphs: result.paragraphs,
+      nextTranslatedText: result.translatedText,
     }));
   };
 
@@ -887,6 +1423,24 @@ export default function WorkspaceView({
     activeChapter.verificationReport?.issues || []
   ).some((i) => i.severity === 'high' && !i.resolved);
   const continuousBanglaGuard = canEditContinuousBangla(activeChapter.paragraphs);
+  const isAnyOperationRunning = runningStage !== 0 || refiningParagraphIdx !== null;
+  const isVerificationPartialOrDet = Boolean(
+    activeChapter.verificationReport?.fidelitySummary &&
+      PARTIAL_OR_DET_SUMMARY_PREFIX_RE.test(
+        activeChapter.verificationReport.fidelitySummary
+      )
+  );
+  const isDeterministicOnlyReport = Boolean(
+    activeChapter.verificationReport?.fidelitySummary &&
+      /^Deterministic terminology check/i.test(
+        activeChapter.verificationReport.fidelitySummary
+      )
+  );
+  const isFullChapterVerified = Boolean(
+    activeChapter.verificationReport &&
+      activeChapter.stageCompleted.verification &&
+      !isVerificationPartialOrDet
+  );
 
   return (
     <div className="max-w-[1440px] mx-auto px-6 lg:px-10 py-6 space-y-6">
@@ -1060,7 +1614,7 @@ export default function WorkspaceView({
             {/* Stage 1 */}
             <button
               type="button"
-              disabled={runningStage !== 0}
+              disabled={isAnyOperationRunning}
               onClick={async () => {
                 try {
                   await executeStage1();
@@ -1071,7 +1625,7 @@ export default function WorkspaceView({
                   setRunningStage(0);
                 }
               }}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors cursor-pointer disabled:opacity-60 whitespace-nowrap shrink-0 ${
                 activeChapter.stageCompleted.understanding
                   ? 'bg-white border-[#D6CFC5] text-[#1C1917]'
                   : 'bg-[#FAF8F5] border-[#E5E0D8] text-[#57534E]'
@@ -1090,7 +1644,7 @@ export default function WorkspaceView({
             {/* Stage 2 */}
             <button
               type="button"
-              disabled={runningStage !== 0}
+              disabled={isAnyOperationRunning}
               onClick={async () => {
                 try {
                   await executeStage2();
@@ -1101,7 +1655,7 @@ export default function WorkspaceView({
                   setRunningStage(0);
                 }
               }}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors cursor-pointer disabled:opacity-60 whitespace-nowrap shrink-0 ${
                 activeChapter.stageCompleted.voiceAnalysis || project.styleProfile
                   ? 'bg-white border-[#D6CFC5] text-[#1C1917]'
                   : 'bg-[#FAF8F5] border-[#E5E0D8] text-[#57534E]'
@@ -1120,7 +1674,7 @@ export default function WorkspaceView({
             {/* Stage 3 */}
             <button
               type="button"
-              disabled={runningStage !== 0}
+              disabled={isAnyOperationRunning}
               onClick={async () => {
                 try {
                   await executeStage3();
@@ -1131,7 +1685,7 @@ export default function WorkspaceView({
                   setRunningStage(0);
                 }
               }}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors cursor-pointer disabled:opacity-60 whitespace-nowrap shrink-0 ${
                 hasMissingTranslations
                   ? 'bg-[#FFFBEB] border-[#F59E0B] text-[#92400E]'
                   : activeChapter.stageCompleted.translation
@@ -1159,7 +1713,7 @@ export default function WorkspaceView({
             {/* Stage 4 */}
             <button
               type="button"
-              disabled={runningStage !== 0}
+              disabled={isAnyOperationRunning}
               onClick={async () => {
                 try {
                   await executeStage4();
@@ -1170,7 +1724,7 @@ export default function WorkspaceView({
                   setRunningStage(0);
                 }
               }}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors cursor-pointer disabled:opacity-60 whitespace-nowrap shrink-0 ${
                 activeChapter.stageCompleted.editing
                   ? 'bg-white border-[#D6CFC5] text-[#1C1917]'
                   : 'bg-[#FAF8F5] border-[#E5E0D8] text-[#57534E]'
@@ -1189,25 +1743,32 @@ export default function WorkspaceView({
             {/* Stage 5 */}
             <button
               type="button"
-              disabled={runningStage !== 0}
+              disabled={isAnyOperationRunning}
               onClick={async () => {
                 try {
                   const updated = await executeStage5();
                   const finalCh =
                     updated.chapters.find((c) => c.id === activeChapter.id) ||
                     updated.chapters[0];
-                  const hasUnresolvedHigh = (
-                    finalCh.verificationReport?.issues || []
-                  ).some((i) => i.severity === 'high' && !i.resolved);
-                  const completion = getPipelineCompletionState(
-                    finalCh.paragraphs,
-                    hasUnresolvedHigh
-                  );
-                  if (!completion.isComplete) {
-                    setPipelineBannerTone(completion.bannerTone);
-                    setPipelineBanner(completion.bannerMessage);
+                  if (!finalCh.stageCompleted.verification) {
+                    setPipelineBannerTone('warning');
+                    setPipelineBanner(
+                      `Stage 5 verification reconciled with concurrent chapter edits. Some paragraphs remain unverified—please re-run Stage 5 to complete full-chapter verification.`
+                    );
                   } else {
-                    setPipelineBanner(null);
+                    const hasUnresolvedHigh = (
+                      finalCh.verificationReport?.issues || []
+                    ).some((i) => i.severity === 'high' && !i.resolved);
+                    const completion = getPipelineCompletionState(
+                      finalCh.paragraphs,
+                      hasUnresolvedHigh
+                    );
+                    if (!completion.isComplete) {
+                      setPipelineBannerTone(completion.bannerTone);
+                      setPipelineBanner(completion.bannerMessage);
+                    } else {
+                      setPipelineBanner(null);
+                    }
                   }
                 } catch (e: unknown) {
                   setErrorBanner(e instanceof Error ? e.message : 'Stage 5 error');
@@ -1215,7 +1776,7 @@ export default function WorkspaceView({
                   setRunningStage(0);
                 }
               }}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors cursor-pointer disabled:opacity-60 whitespace-nowrap shrink-0 ${
                 activeChapter.stageCompleted.verification &&
                 (hasMissingTranslations || hasUnresolvedHighVerificationIssues)
                   ? 'bg-[#FFFBEB] border-[#F59E0B] text-[#92400E]'
@@ -1241,7 +1802,7 @@ export default function WorkspaceView({
           {/* Primary Action: Run Complete 5-Stage Adaptive Pipeline */}
           <button
             type="button"
-            disabled={runningStage !== 0}
+            disabled={isAnyOperationRunning}
             onClick={handleRunFullPipeline}
             className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#9A3412] rounded-lg hover:bg-[#7C2D12] disabled:opacity-60 transition-colors cursor-pointer whitespace-nowrap shrink-0 shadow-xs"
           >
@@ -1385,9 +1946,13 @@ export default function WorkspaceView({
             <ShieldCheck className="w-3.5 h-3.5" />
             <span>
               Editorial & Accuracy Audit
-              {activeChapter.verificationReport
+              {isFullChapterVerified && activeChapter.verificationReport
                 ? ` (${activeChapter.verificationReport.overallScore}%)`
-                : ''}
+                : activeChapter.verificationReport && isDeterministicOnlyReport
+                  ? ' (Terminology Check)'
+                  : activeChapter.verificationReport
+                    ? ' (Re-verify Needed)'
+                    : ''}
             </span>
           </button>
         </div>
@@ -1497,7 +2062,7 @@ export default function WorkspaceView({
                             {isMissing && (
                               <button
                                 type="button"
-                                disabled={isRefiningThis}
+                                disabled={isRefiningThis || runningStage !== 0}
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   handleRefineParagraph(idx, 'match_author_style');
@@ -1570,7 +2135,7 @@ export default function WorkspaceView({
                             <button
                               key={opt.id}
                               type="button"
-                              disabled={isRefiningThis}
+                              disabled={isRefiningThis || runningStage !== 0}
                               onClick={() => handleRefineParagraph(idx, opt.id)}
                               className="px-3 py-1.5 text-xs font-medium text-[#1C1917] bg-[#F3EFEA] hover:bg-[#EAE4DC] border border-[#D6CFC5] rounded-lg transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap shrink-0"
                             >
@@ -1731,18 +2296,22 @@ export default function WorkspaceView({
             }
           }}
           onUpdateStyleProfile={(updatedProfile) => {
-            onUpdateProject({
-              ...project,
+            const nextProj: TranslationProject = {
+              ...projectRef.current,
               styleProfile: updatedProfile,
               updatedAt: new Date().toISOString(),
-            });
+            };
+            projectRef.current = nextProj;
+            onUpdateProject(nextProj);
           }}
           onUpdateStyleControls={(updatedControls) => {
-            onUpdateProject({
-              ...project,
+            const nextProj: TranslationProject = {
+              ...projectRef.current,
               styleControls: updatedControls,
               updatedAt: new Date().toISOString(),
-            });
+            };
+            projectRef.current = nextProj;
+            onUpdateProject(nextProj);
           }}
         />
       )}
@@ -1765,25 +2334,130 @@ export default function WorkspaceView({
             }
           }}
           onUpdateStoryContext={(ctx) => {
-            onUpdateProject({
-              ...project,
+            const nextProj: TranslationProject = {
+              ...projectRef.current,
               storyContext: ctx,
               updatedAt: new Date().toISOString(),
-            });
+            };
+            projectRef.current = nextProj;
+            onUpdateProject(nextProj);
           }}
           onUpdateCharacters={(chars) => {
-            onUpdateProject({
-              ...project,
+            const nextProj: TranslationProject = {
+              ...projectRef.current,
               characterMemory: chars,
               updatedAt: new Date().toISOString(),
-            });
+            };
+            projectRef.current = nextProj;
+            onUpdateProject(nextProj);
           }}
           onUpdateTerminology={(terms) => {
-            onUpdateProject({
-              ...project,
-              terminologyMemory: terms,
-              updatedAt: new Date().toISOString(),
-            });
+            const latestProj = projectRef.current;
+            const prevGlossary = hydrateProjectGlossary(latestProj.terminologyMemory);
+            const nextGlossary = hydrateProjectGlossary(terms);
+
+            const prevMap = new Map(prevGlossary.map((t) => [t.id, t]));
+            const nextMap = new Map(nextGlossary.map((t) => [t.id, t]));
+
+            const changedTermIds = new Set<string>();
+            const changedTerms: TerminologyMemoryItem[] = [];
+
+            for (const [id, prevTerm] of prevMap.entries()) {
+              const nextTerm = nextMap.get(id);
+              if (!nextTerm) {
+                changedTermIds.add(id);
+                changedTerms.push(prevTerm);
+              } else if (hasVerificationRelevantGlossaryRuleChanged(prevTerm, nextTerm)) {
+                changedTermIds.add(id);
+                changedTerms.push(prevTerm, nextTerm);
+              }
+            }
+
+            for (const [id, nextTerm] of nextMap.entries()) {
+              if (!prevMap.has(id)) {
+                changedTermIds.add(id);
+                changedTerms.push(nextTerm);
+              }
+            }
+
+            const now = new Date().toISOString();
+            const updatedChapters =
+              changedTermIds.size === 0
+                ? latestProj.chapters
+                : latestProj.chapters.map((ch) => {
+                    if (!ch.verificationReport) return ch;
+
+                    const preFilteredIssues = ch.verificationReport.issues.filter(
+                      (issue) => {
+                        if (issue.source === 'deterministic_lint') return true;
+                        if (issue.type !== 'terminology') return true;
+                        if (issue.termId && changedTermIds.has(issue.termId)) {
+                          return false;
+                        }
+                        const pIdx = issue.paragraphIndex;
+                        const paragraphEn =
+                          typeof pIdx === 'number' &&
+                          Number.isInteger(pIdx) &&
+                          pIdx >= 0 &&
+                          pIdx < ch.paragraphs.length
+                            ? ch.paragraphs[pIdx].englishText
+                            : undefined;
+
+                        if (
+                          changedTerms.some((term) =>
+                            doesAiTerminologyIssueMatchChangedTerm(
+                              issue,
+                              term,
+                              paragraphEn
+                            )
+                          )
+                        ) {
+                          return false;
+                        }
+                        return true;
+                      }
+                    );
+
+                    const reconciledReport = reconcileVerificationReportAfterLocalEdit({
+                      previousReport: {
+                        ...ch.verificationReport,
+                        issues: preFilteredIssues,
+                      },
+                      previousParagraphs: ch.paragraphs,
+                      latestParagraphs: ch.paragraphs,
+                      latestGlossary: nextGlossary,
+                    });
+
+                    const nextReport: VerificationReport | null = reconciledReport
+                      ? {
+                          ...reconciledReport,
+                          isComplete: false,
+                          fidelitySummary: ensureGlossaryPartialVerificationSummary(
+                            reconciledReport.fidelitySummary
+                          ),
+                        }
+                      : null;
+
+                    return {
+                      ...ch,
+                      verificationReport: nextReport,
+                      stageCompleted: {
+                        ...ch.stageCompleted,
+                        verification: false,
+                      },
+                      status: ch.status === 'completed' ? 'needs_review' : ch.status,
+                      updatedAt: now,
+                    };
+                  });
+
+            const nextProj: TranslationProject = {
+              ...latestProj,
+              terminologyMemory: nextGlossary,
+              chapters: updatedChapters,
+              updatedAt: now,
+            };
+            projectRef.current = nextProj;
+            onUpdateProject(nextProj);
           }}
         />
       )}
@@ -1794,6 +2468,8 @@ export default function WorkspaceView({
           editorialNotes={activeChapter.editorialNotes}
           editorialChanges={activeChapter.editorialChanges}
           verificationReport={activeChapter.verificationReport}
+          isVerificationComplete={activeChapter.stageCompleted.verification}
+          isAnyStageRunning={isAnyOperationRunning}
           isRunningStage4={runningStage === 4}
           isRunningStage5={runningStage === 5}
           onRunStage4={async () => {
@@ -1812,15 +2488,22 @@ export default function WorkspaceView({
               const finalCh =
                 updated.chapters.find((c) => c.id === activeChapter.id) ||
                 updated.chapters[0];
-              const completion = getPipelineCompletionState(
-                finalCh.paragraphs,
-                finalCh.verificationReport?.issues || []
-              );
-              if (!completion.isComplete) {
-                setPipelineBannerTone(completion.bannerTone);
-                setPipelineBanner(completion.bannerMessage);
+              if (!finalCh.stageCompleted.verification) {
+                setPipelineBannerTone('warning');
+                setPipelineBanner(
+                  `Stage 5 verification reconciled with concurrent chapter edits. Some paragraphs remain unverified—please re-run Stage 5 to complete full-chapter verification.`
+                );
               } else {
-                setPipelineBanner(null);
+                const completion = getPipelineCompletionState(
+                  finalCh.paragraphs,
+                  finalCh.verificationReport?.issues || []
+                );
+                if (!completion.isComplete) {
+                  setPipelineBannerTone(completion.bannerTone);
+                  setPipelineBanner(completion.bannerMessage);
+                } else {
+                  setPipelineBanner(null);
+                }
               }
             } catch (e: unknown) {
               setErrorBanner(e instanceof Error ? e.message : 'Stage 5 error');
@@ -1829,13 +2512,63 @@ export default function WorkspaceView({
             }
           }}
           onApplySuggestedFix={(issue) => {
-            const pIdx = issue.paragraphIndex ?? 0;
-            if (!issue.suggestedFix) return;
+            if (issue.source === 'deterministic_lint') return;
+            if (
+              typeof issue.paragraphIndex !== 'number' ||
+              !Number.isFinite(issue.paragraphIndex) ||
+              !Number.isInteger(issue.paragraphIndex) ||
+              issue.paragraphIndex < 0
+            ) {
+              return;
+            }
+            if (
+              typeof issue.suggestedFix !== 'string' ||
+              !issue.suggestedFix.trim() ||
+              !BANGLA_SCRIPT_CHECK_RE.test(issue.suggestedFix)
+            ) {
+              return;
+            }
 
-            updateChapterInProject(project, activeChapter.id, (existing) => {
+            const pIdx = issue.paragraphIndex;
+            const trimmedFix = issue.suggestedFix.trim();
+            const latestProj = projectRef.current;
+            const currentCh =
+              latestProj.chapters.find((c) => c.id === activeChapter.id) ||
+              latestProj.chapters[0];
+            const targetPair = currentCh?.paragraphs[pIdx];
+            if (!currentCh || !targetPair) return;
+
+            if (issue.paragraphContentFingerprint) {
+              const currentFp = computeParagraphContentFingerprint(
+                targetPair.englishText,
+                targetPair.banglaText
+              );
+              if (currentFp !== issue.paragraphContentFingerprint) {
+                setErrorBanner(
+                  `Cannot apply suggested fix to Paragraph ${pIdx + 1}: its text was modified since this verification finding was generated. Please re-run Stage 5 or edit the paragraph directly.`
+                );
+                return;
+              }
+            }
+
+            updateChapterInProject(projectRef.current, currentCh.id, (existing) => {
+              const existingTarget = existing.paragraphs[pIdx];
+              if (!existingTarget) return existing;
+
+              if (issue.paragraphContentFingerprint) {
+                const existingFp = computeParagraphContentFingerprint(
+                  existingTarget.englishText,
+                  existingTarget.banglaText
+                );
+                if (existingFp !== issue.paragraphContentFingerprint) {
+                  return existing;
+                }
+              }
+
               const newPairs = existing.paragraphs.map((item, idx) =>
                 idx === pIdx
-                  ? updateParagraphTranslation(item, issue.suggestedFix!, {
+                  ? updateParagraphTranslation(item, trimmedFix, {
+                      previousBanglaText: item.banglaText,
                       lastRefinementAction: 'manual_edit',
                     })
                   : item
@@ -1844,54 +2577,122 @@ export default function WorkspaceView({
                 field: 'banglaText',
                 omitEmpty: true,
               });
-              const currentIssues = existing.verificationReport?.issues || [];
-              const resolved = resolveVerificationIssue(
-                newPairs,
-                currentIssues,
-                issue.id
+
+              const reportWithResolvedIssue: VerificationReport | null =
+                existing.verificationReport
+                  ? {
+                      ...existing.verificationReport,
+                      issues: existing.verificationReport.issues.map((i) =>
+                        i.id === issue.id ? { ...i, resolved: true } : i
+                      ),
+                    }
+                  : null;
+
+              const reconciledReport = reconcileVerificationReportAfterLocalEdit({
+                previousReport: reportWithResolvedIssue,
+                previousParagraphs: existing.paragraphs,
+                latestParagraphs: newPairs,
+                latestGlossary: hydrateProjectGlossary(
+                  projectRef.current.terminologyMemory
+                ),
+              });
+
+              const nextVerificationCompleted = Boolean(
+                existing.stageCompleted.verification &&
+                  reconciledReport &&
+                  reconciledReport.isComplete !== false &&
+                  !PARTIAL_OR_DET_SUMMARY_PREFIX_RE.test(
+                    reconciledReport.fidelitySummary || ''
+                  )
               );
+
+              const hasMissing = newPairs.some(
+                (p) => Boolean(p.missingTranslation) || !p.banglaText.trim()
+              );
+              const hasUnresolvedHigh = (reconciledReport?.issues || []).some(
+                (i) => i.severity === 'high' && !i.resolved
+              );
+              const hasTranslated = newPairs.some((p) => p.banglaText.trim().length > 0);
+              const nextStatus: Chapter['status'] =
+                nextVerificationCompleted && !hasMissing && !hasUnresolvedHigh
+                  ? 'completed'
+                  : hasTranslated
+                    ? 'needs_review'
+                    : 'pending';
+
               if (pipelineBanner) {
-                if (resolved.completion.isComplete) {
+                if (nextStatus === 'completed') {
                   setPipelineBanner(null);
                 } else {
-                  setPipelineBannerTone(resolved.completion.bannerTone);
-                  setPipelineBanner(resolved.completion.bannerMessage);
+                  const completion = getPipelineCompletionState(
+                    newPairs,
+                    reconciledReport?.issues || []
+                  );
+                  if (!completion.isComplete) {
+                    setPipelineBannerTone(completion.bannerTone);
+                    setPipelineBanner(completion.bannerMessage);
+                  } else {
+                    setPipelineBannerTone('warning');
+                    setPipelineBanner(
+                      `Paragraph ${pIdx + 1} was updated with the suggested fix. Re-run Stage 5 to complete full-chapter verification.`
+                    );
+                  }
                 }
               }
+
               return {
                 ...existing,
                 translatedText: fullBangla,
                 paragraphs: newPairs,
-                status: existing.stageCompleted.verification
-                  ? resolved.chapterStatus
-                  : existing.status,
-                verificationReport: existing.verificationReport
-                  ? { ...existing.verificationReport, issues: resolved.updatedIssues }
-                  : null,
+                stageCompleted: {
+                  ...existing.stageCompleted,
+                  verification: nextVerificationCompleted,
+                },
+                status: nextStatus,
+                verificationReport: reconciledReport,
                 updatedAt: new Date().toISOString(),
               };
             });
           }}
           onMarkIssueResolved={(issueId) => {
             if (!activeChapter.verificationReport) return;
-            updateChapterInProject(project, activeChapter.id, (existing) => {
+            updateChapterInProject(projectRef.current, activeChapter.id, (existing) => {
               const currentIssues = existing.verificationReport?.issues || [];
               const resolved = resolveVerificationIssue(
                 existing.paragraphs,
                 currentIssues,
                 issueId
               );
+              const isTrulyCompleteVerification = Boolean(
+                existing.stageCompleted.verification &&
+                  existing.verificationReport &&
+                  existing.verificationReport.isComplete !== false &&
+                  !PARTIAL_OR_DET_SUMMARY_PREFIX_RE.test(
+                    existing.verificationReport.fidelitySummary || ''
+                  )
+              );
+
               if (pipelineBanner) {
-                if (resolved.completion.isComplete) {
+                if (isTrulyCompleteVerification && resolved.completion.isComplete) {
                   setPipelineBanner(null);
-                } else {
+                } else if (!resolved.completion.isComplete) {
                   setPipelineBannerTone(resolved.completion.bannerTone);
                   setPipelineBanner(resolved.completion.bannerMessage);
                 }
               }
+
+              const hasTranslated = existing.paragraphs.some(
+                (p) => p.banglaText.trim().length > 0
+              );
+              const nextStatus: Chapter['status'] = isTrulyCompleteVerification
+                ? resolved.chapterStatus
+                : hasTranslated
+                  ? 'needs_review'
+                  : 'pending';
+
               return {
                 ...existing,
-                status: resolved.chapterStatus,
+                status: nextStatus,
                 verificationReport: existing.verificationReport
                   ? { ...existing.verificationReport, issues: resolved.updatedIssues }
                   : null,
@@ -1904,3 +2705,4 @@ export default function WorkspaceView({
     </div>
   );
 }
+
