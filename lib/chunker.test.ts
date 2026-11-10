@@ -1580,4 +1580,137 @@ test('34. A brand-new untranslated chapter does not incorrectly show a missing-t
   assert.deepEqual(missingWarningIndices, []);
 });
 
+test('35. Milestone 2B.7: formatBilingualExport omits placeholder author and chapter metadata, emits clean header lines, and preserves Markdown italics and 1-to-1 paragraph alignment', () => {
+  const englishWithItalicsAndClarification = [
+    '*Mrs. Pell: one umbrella, black, lent the fourteenth of October. Returned: no.* And beside it, in her father’s small upright hand, a single word in brackets: *(Fine.)*',
+    '“It was—” Ines stopped. It had been the only thing the two of them had been able to say. *Fog again*, her father’s cards had read, every winter, in that upright hand, and she had understood perfectly and never answered it. *Fog again* had meant *come home*. Her replies had said *Rain here*, which was a lie, and had meant *I can’t*.',
+    '*(Not fine. Paid.)*',
+  ].join('\n\n');
+
+  const banglaWithItalics = [
+    '*মিসেস পেল: একটি ছাতা, কালো, ধার দেওয়া হয়েছে চৌদ্দই অক্টোবর। ফেরত: না।* আর তার পাশে, তার বাবার ছোট খাড়া হাতের লেখায়, বন্ধনীর ভেতর একটিই শব্দ: *(ঠিক আছে।)*',
+    '“ওটা ছিল—” ইনেস থেমে গেল। দুজনের মধ্যে কেবল ওইটুকুই বলা সম্ভব হয়েছিল। *আবার কুয়াশা*, প্রতি শীতে বাবার পোস্টকার্ডে ওই খাড়া হাতের লেখায় এটুকুই লেখা থাকত, আর ইনেস সবটাই নিখুঁতভাবে বুঝেছিল কিন্তু কখনো তার উত্তর দেয়নি। *আবার কুয়াশা* মানে ছিল *বাড়ি ফিরে এসো*। তার উত্তরে লেখা থাকত *এখানে বৃষ্টি*, যা ছিল ডাহা মিথ্যে, আর যার আসল মানে ছিল *আমি পারব না*।',
+    '*(ঠিক নেই। শোধ।)*',
+  ].join('\n\n');
+
+  const pairs = alignParagraphs(englishWithItalicsAndClarification, banglaWithItalics);
+  assert.equal(pairs.length, 3);
+
+  const chapter: Chapter = {
+    id: 'ch-owing-1',
+    number: 1,
+    title: 'Chapter 1',
+    originalText: englishWithItalicsAndClarification,
+    translatedText: banglaWithItalics,
+    paragraphs: pairs,
+    status: 'completed',
+    currentStage: 5,
+    stageCompleted: {
+      understanding: true,
+      voiceAnalysis: true,
+      translation: true,
+      editing: true,
+      verification: true,
+    },
+    editorialNotes: [],
+    editorialChanges: [],
+    verificationReport: null,
+    chunkCount: 1,
+    completedChunks: 1,
+    updatedAt: new Date().toISOString(),
+  };
+
+  const project: TranslationProject = {
+    id: 'proj-owing',
+    title: 'The Owing Book',
+    authorName: 'Unknown Author',
+    genre: 'Literary Fiction',
+    sourceLanguage: 'English',
+    targetLanguage: 'Bangla (বাংলা)',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    styleProfile: null,
+    storyContext: null,
+    characterMemory: [],
+    terminologyMemory: [],
+    styleControls: {
+      preserveAuthorStyle: true,
+      naturalness: 'highly_natural',
+      literaryExpression: 'rich',
+      languageComplexity: 'medium',
+      dialogueStyle: 'more_conversational',
+      translationApproach: 'faithful',
+    },
+    chapters: [chapter],
+  };
+
+  const exported = formatBilingualExport(project);
+
+  // Verify exact header lines and absence of placeholder author/chapter titles
+  assert.ok(
+    exported.startsWith(
+      [
+        'PROJECT: The Owing Book',
+        'GENRE: Literary Fiction',
+        'SOURCE: English',
+        'TARGET: Bangla (বাংলা)',
+        '====================================================================',
+      ].join('\n')
+    )
+  );
+  assert.equal(exported.includes('ORIGINAL AUTHOR:'), false);
+  assert.equal(exported.includes('Unknown'), false);
+  assert.equal(exported.includes('CHAPTER 1: Chapter 1'), false);
+
+  // Verify source clarification and Markdown *...* italics survive in both sections
+  assert.ok(exported.includes('and she had understood perfectly and never answered it.'));
+  assert.ok(exported.includes('*(Fine.)*'));
+  assert.ok(exported.includes('*(Not fine. Paid.)*'));
+  assert.ok(exported.includes('*Fog again*'));
+  assert.ok(exported.includes('*come home*'));
+  assert.ok(exported.includes('*Rain here*'));
+  assert.ok(exported.includes('*I can’t*'));
+  assert.ok(exported.includes('*(ঠিক আছে।)*'));
+  assert.ok(exported.includes('*(ঠিক নেই। শোধ।)*'));
+  assert.ok(exported.includes('*আবার কুয়াশা*'));
+  assert.ok(exported.includes('*এখানে বৃষ্টি*'));
+});
+
+test('37. Milestone 2B.8d-F: resolveVerificationIssue and getPipelineCompletionState do not mark chapter completed when Stage 5 audit is incomplete', () => {
+  const translatedParagraphs = [
+    {
+      index: 0,
+      englishText: 'First paragraph.',
+      banglaText: 'প্রথম অনুচ্ছেদ।',
+    },
+    {
+      index: 1,
+      englishText: 'Second paragraph.',
+      banglaText: 'দ্বিতীয় অনুচ্ছেদ।',
+    },
+  ];
+  const singleHighIssue: VerificationIssue[] = [
+    {
+      id: 'issue-high-1',
+      severity: 'high',
+      type: 'changed_meaning',
+      paragraphIndex: 0,
+      description: 'Meaning shifted.',
+      resolved: false,
+    },
+  ];
+
+  // When the Stage 5 audit itself was incomplete (e.g., partial/outdated or deterministic-only pre-check),
+  // resolving the last high issue must NOT flip completion to true or chapterStatus to completed.
+  const resolvedIncompleteAudit = resolveVerificationIssue(
+    translatedParagraphs,
+    singleHighIssue,
+    'issue-high-1',
+    { isVerificationAuditComplete: false }
+  );
+  assert.equal(resolvedIncompleteAudit.updatedIssues[0].resolved, true);
+  assert.equal(resolvedIncompleteAudit.completion.isComplete, false);
+  assert.equal(resolvedIncompleteAudit.chapterStatus, 'needs_review');
+  assert.equal(resolvedIncompleteAudit.completion.bannerTone, 'warning');
+});
 

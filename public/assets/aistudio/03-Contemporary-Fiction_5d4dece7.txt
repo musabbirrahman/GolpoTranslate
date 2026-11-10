@@ -1,0 +1,220 @@
+================================================================
+GOLPOTRANSLATE TEST CORPUS — 03 OF 05
+================================================================
+TITLE:      Sorry, Wrong Group
+GENRE:      Contemporary fiction (comedy of embarrassment)
+LENGTH:     approx. 1,900 words
+POV/TENSE:  Close third person, past tense, with chat messages
+
+WHAT THIS STORY TESTS
+- Natural spoken dialogue: interruptions, teasing, fillers, slang.
+- Humour that depends on tone and timing, not just meaning.
+- Text-message register (abbreviations, emoji descriptions, lowercase
+  energy) rendered in believable Bangla chat style.
+- Everyday idioms ("hit the roof", "up in the air", "not my circus").
+  The translator must choose natural equivalents, not literal ones.
+- Office/family/friend registers in a single story.
+
+----------------------------------------------------------------
+STORY
+----------------------------------------------------------------
+
+SORRY, WRONG GROUP
+
+At 8:47 on a Monday morning, Nadia Karim did the single stupidest thing of her working life, and she did it with her thumb.
+
+She was on the bus, standing, one hand on the pole, the other holding her phone, a half-eaten banana wedged under her arm. She had two group chats open: "Karim Family Chaos," where her aunt had just posted a photo of a biryani with the caption NOBODY MAKES IT LIKE ME, and "Marketing Team 🚀," where her manager, Mr. Farooq, had just written, Good morning team. Reminder: client presentation at 10. Please be early.
+
+Nadia wanted to say something clever about the biryani. She typed it fast.
+
+Khala, I love you, but this looks like it was cooked by someone who has never met a spice. Also it's 8:47. Who eats biryani at 8:47?? 😂
+
+She hit send. The bus lurched. The banana fell. And in the small bright rectangle of her screen, the message sat in the wrong chat, under Mr. Farooq's reminder, with a tiny grey tick that turned blue almost at once.
+
+Nadia stared at it.
+
+Then she did what any sensible person would do: she screamed, quietly, into her sleeve.
+
+---
+
+The first reply came in under a minute.
+
+Priya (Design): wait
+Priya (Design): who is khala
+Priya (Design): and WHY is she cooking biryani at the office
+Rahim (Accounts): 😭😭😭
+Rahim (Accounts): this is the best thing to ever happen to this group
+Nadia: DELETE
+Nadia: I'm deleting it
+Nadia: it's gone
+Rahim (Accounts): too late. screenshot taken. framed. hanging in my heart
+Priya (Design): I think it's an honest review tbh
+
+Nadia hit "Delete for everyone" with a trembling finger, which made it worse, because now the chat said, in tiny, merciless letters, This message was deleted, and underneath, Priya had sent: lol we all saw it. We ALL saw it.
+
+There was no reply from Mr. Farooq.
+
+That was the part that made her sweat.
+
+---
+
+By the time she reached the office, she had drafted four apologies and sent none of them. The first was too long. The second was too casual. The third promised that she would never again eat, cook, or think about biryani. The fourth just said I'm so sorry and then a skull emoji, which she deleted at once.
+
+She sat at her desk. Priya swivelled around in her chair and put a coffee in front of her.
+
+"I come in peace," Priya said. "And with a flat white."
+
+"I want to die."
+
+"You're not going to die. Mr. Farooq hasn't even read it. He doesn't check the group until ten."
+
+"The tick went blue."
+
+"The tick goes blue when anyone sees it. It could have been Rahim. It could have been me. It could have been the intern." Priya paused. "It was probably the intern."
+
+"It was Mr. Farooq. He reads everything." Nadia put her head on the desk. "He once replied to an email I sent at midnight to say I'd misspelled 'liaison.' At midnight."
+
+"Okay, but think about it logically. What would he even do? Fire you for insulting a biryani?"
+
+"He's from Chittagong. He takes biryani very seriously."
+
+"That's a stereotype."
+
+"It's a lifestyle."
+
+Priya sighed and stole a corner of Nadia's toast. "Look. You have a presentation at ten. Don't think about it. Do the thing. Be brilliant. By lunch he'll have forgotten."
+
+"He will not forget."
+
+"Then he'll have forgiven."
+
+"He will not forgive."
+
+"Then," said Priya, standing up, "at least you'll go out with a good presentation. Chin up. Slides on."
+
+---
+
+The slides, to be fair, were excellent.
+
+Nadia had been working on them for three weeks. The client was a snack company called Crunchy Roots, which wanted to launch a line of spiced lentil crisps and had no idea how to explain this to anyone under forty. Nadia's deck was clean and funny, with a mascot she had invented named Dal-Dal the Dancing Lentil. She had rehearsed it in the shower. She had rehearsed it on the bus. She had rehearsed it, once, in front of a very patient cat.
+
+At 9:58, she stood at the head of the conference table with her laptop open and her heart doing something rhythmic and unfortunate in her chest. Across the table sat three people from Crunchy Roots, a tray of biscuits, and Mr. Farooq.
+
+He was a tall man with a grey moustache and a face that gave away nothing. He nodded to her once. He did not smile. Nadia tried to read the nod and failed, the way you fail to read a sign in a language you studied for one week.
+
+"Good morning, everyone," she said. "Thank you for coming. Today I'd like to talk about lentils."
+
+Someone coughed. It might have been a laugh.
+
+She went on. She talked about Dal-Dal. She talked about the three-second snack rule and the ten-metre smell test, which was her own invention and which sounded much better than it was. She clicked through slide after slide, and little by little the nervous knot in her chest loosened, until she was no longer thinking about the message at all.
+
+She had reached the final slide, the big finish with the dancing lentil, when the client's marketing director, a brisk woman named Mrs. Alam, leaned forward and said:
+
+"This is lovely. One question. For the launch event, we were thinking of serving food. A little tasting menu. What would you suggest?"
+
+Nadia opened her mouth, and the answer fell out before she could stop it.
+
+"Biryani," she said.
+
+The room went very quiet.
+
+"Not as a, I mean, not in the *snack* sense," she added, as the heat climbed up her neck. "Obviously the crisps would be the star. But I just think, if you want people to feel at home, to feel that sense of... of generosity..." She heard herself. She could not stop herself. "A well-cooked biryani is the heart of any gathering. It has to be well-cooked, though. With spices. Proper spices."
+
+Mr. Farooq raised one eyebrow.
+
+Nadia wished, with great sincerity, that the floor would open and take her to a better place.
+
+---
+
+"That," said Mrs. Alam slowly, "is an excellent idea."
+
+Nadia blinked. "Sorry?"
+
+"A hot meal at a snack launch. It breaks the format. It makes it a *feast* and not a *product show.*" She turned to her colleagues, who were nodding. "I like it. I like it very much. Fahim, write that down: biryani, proper spices."
+
+The man called Fahim wrote it down.
+
+Mr. Farooq cleared his throat. Everyone looked at him.
+
+"I would like to add," he said, in a calm, deep voice, "that I am, as it happens, a great believer in a good biryani. Cooked well. Without shortcuts." He looked, for the first time, directly at Nadia. "I was reading a very interesting opinion about it this morning."
+
+Nadia's soul left her body quietly and went to wait in the corridor.
+
+"But I am told," he went on, "that the author has promised never to share it again. In the group, at least."
+
+There was a short silence. Then, to Nadia's total astonishment, one corner of his moustache moved. It was not a smile. It was the shadow of a smile, a thing that would never be admitted in court.
+
+"Please continue," he said. "You are doing very well."
+
+---
+
+The client signed at noon.
+
+By one o'clock, Rahim had printed the screenshot, put it in a cheap frame, and hung it in the pantry above the kettle, under a handwritten label that read: THE KHALA INCIDENT, 8:47 A.M. Priya had taken it down and put it back three times, partly to be kind and partly because she could not stop laughing. Even the intern had asked, shyly, if there was a sequel.
+
+At two, Nadia's phone buzzed.
+
+It was a message from her aunt, in the right chat this time.
+
+Khala: Nadia, why did you send me a photo of Mr. Farooq's moustache?
+
+Nadia frowned. She scrolled up.
+
+There, in "Karim Family Chaos," directly beneath the biryani, sat a photo she had absolutely no memory of taking: a candid shot of Mr. Farooq in the conference room, mid-sentence, moustache first. Under it was a message, timestamped 9:51 a.m.:
+
+Brace yourselves. This is the man who decides if I live or die.
+
+She had sent it from under the table. She must have done it while the clients were arriving, during the three seconds she had been panicking and looking at her phone. And she had sent it to the wrong group. *Again.*
+
+Nadia put her phone face down on the desk very, very gently.
+
+"Priya," she said.
+
+"Mm?"
+
+"Is there any chance," said Nadia, "that you could teach me how to move to another country?"
+
+Priya looked at her. Then, with great tenderness, she opened her drawer, pulled out the last biscuit, and handed it over.
+
+"Sorry, wrong group," she said.
+
+----------------------------------------------------------------
+VOICE REFERENCE (for the translator)
+----------------------------------------------------------------
+- Narration: light, wry, comedic timing built on short punchy
+  sentences and escalating embarrassment.
+- Nadia: anxious, funny, self-deprecating; thinks in exaggeration.
+- Priya: dry, loyal, deadpan. Speaks in short quips.
+- Rahim: mischievous, uses laughing emoji and "lol/tbh" energy.
+- Mr. Farooq: formal, controlled, deadpan authority. His joke lands
+  only because he is so serious. Keep his register stiff and exact.
+- Mrs. Alam: brisk, polished corporate register.
+- Khala (aunt): affectionate, family-chat register.
+- Chat messages: informal, lowercase-feeling, can mix English words in
+  Bangla chat style (e.g. "tbh", "lol"), as real Bangladeshi chat does.
+
+----------------------------------------------------------------
+TERMINOLOGY TABLE
+----------------------------------------------------------------
+Term / phrase              | Notes for translation
+---------------------------|-----------------------------------------
+Khala                      | মাসি/খালা: "খালা" (maternal aunt in a
+                           | Muslim Bangladeshi family); keep consistent
+group chat / "Delete for   | গ্রুপ চ্যাট / "ডিলিট ফর এভরিওয়ান"
+everyone"                  |
+blue tick                  | নীল টিক (message seen)
+flat white                 | Keep as "ফ্ল্যাট হোয়াইট" or "কফি"
+Crunchy Roots              | Brand name; transliterate once and keep
+Dal-Dal the Dancing Lentil | Mascot; wordplay: "ডাল-ডাল" works
+                           | naturally in Bangla
+"biryani" (running gag)    | The punchline depends on repeating the
+                           | word; do not vary the word
+"I want to die"            | Hyperbole, humorous; do not make it dark
+"soul left her body"       | Idiom of embarrassment; choose a natural
+                           | Bangla idiom
+"the shadow of a smile,    | Dry comic line; keep the understatement
+a thing that would never   |
+be admitted in court"      |
+"Sorry, wrong group"       | Title and final line; keep identical in
+                           | both places
+================================================================

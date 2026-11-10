@@ -1,0 +1,188 @@
+================================================================
+GOLPOTRANSLATE TEST CORPUS — 05 OF 05
+================================================================
+TITLE:      The Salt Cartographers
+GENRE:      Fantasy / speculative
+LENGTH:     approx. 2,000 words
+POV/TENSE:  Close third person, past tense
+
+WHAT THIS STORY TESTS
+- Invented terminology: the translator must transliterate or coin
+  Bangla equivalents ONCE and then keep every term perfectly
+  consistent across the whole story.
+- World-building exposition delivered naturally, in dialogue and
+  description, without a glossary inside the text.
+- Unusual imagery (maps made of salt, tides that move at night, a
+  sea that remembers). Tests figurative language in Bangla.
+- Terms with a made-up compound structure (e.g. "harrowtide"):
+  does the translator keep the compound logic?
+
+----------------------------------------------------------------
+STORY
+----------------------------------------------------------------
+
+THE SALT CARTOGRAPHERS
+
+In the town of Ossamere, where the land ended and the Veyl began, the maps were made of salt.
+
+Nobody remembered why. The oldest cartographer, a woman named Teshwen with hands like dried roots, said it was because ink lied and salt did not. Ink was just a colour spread on a surface, she said; salt was a promise made by the sea. When a map was poured, the salt remembered the shape of the coast beneath it, and when the Veyl moved, the salt moved with it.
+
+This was the reason the maps mattered. The Veyl was a sea, but it was not a sea like other seas. It had no fixed edge. Twice in every year, at the turning of the seasons, it rose over the shore in a great silent wall called the harrowtide, and when it drew back, the coast had changed. A cliff was missing. An island had appeared. A harbour had been swallowed whole, and in its place stood a field of pale, strange reeds that hummed in the wind.
+
+The salt maps told the fishermen where the new coast lay. Without them, the boats went out and did not come back.
+
+Ilka Varn had been a cartographer's apprentice for six years, and she had never yet been allowed to pour a map alone.
+
+---
+
+"Again," said Teshwen.
+
+They were in the Chartroom, a long, cold chamber at the top of the harbour tower. Its floor was a single great table of black slate, ringed with a groove, and on that slate lay the map of the coast as it stood: a thin white tracery of salt in the shape of bays and headlands, each grain placed by hand. Beside it stood a row of small horn bowls, each filled with a different grade of salt. There was grey salt for rock, fine white salt for sand, green-flecked salt for the reed-fields, and, in a bowl of its own, a rare, glittering crystal the colour of a bruise.
+
+That was thrennet. It was the most important salt in the world, and the hardest to use. A pinch of thrennet, scattered on the map, would show the pull of the harrowtide: where the sea would come in, where it would bite, where it would give back. It was the only salt that looked forward.
+
+"I did it again," said Ilka. "Three times."
+
+"And?"
+
+"The map says the tide will take the east pier."
+
+"It will," said Teshwen. "Pour it again."
+
+Ilka's hands closed on the horn bowl. She breathed. She tipped a thin line of thrennet over the slate, letting it fall in the old pattern, the three slow circles, the long drawn line, and the salt did what the salt always did: it shivered, rearranged itself, and settled. The bruise-coloured crystals ran like water toward the east of the map and gathered on the pier in a dark knot.
+
+"The east pier," Ilka said again. Her voice was small. "But sister Teshwen, the east pier is where my brother's boat is moored."
+
+The old woman said nothing.
+
+"If the harrowtide takes the pier, the boat goes. And Davin sleeps on it. He sleeps on it every night. He says the sound of the water helps him dream."
+
+"I know," said Teshwen.
+
+"Then we should warn him."
+
+"We will warn everyone in Ossamere. Tonight. Every boat will be moved before dusk." Teshwen laid one gnarled hand on the slate. "That is the work. We are not here to be sad about the sea. We are here to be early."
+
+---
+
+But the harrowtide had never come early, and it had never come in the daytime, and on the afternoon of the third day, when Ilka ran down the tower stairs with a handful of grey ribbons to tie to the endangered boats, she saw that the water on the horizon had already changed.
+
+It was too still.
+
+The sea of the Veyl was never calm. It always rolled, it always muttered, a long soft complaint against the shore. Now it lay flat as polished glass, without a single ripple, as far as she could see. And far out, where the sky met the water, a thin white line was rising: not a wave, but a wall.
+
+She ran.
+
+The harbour was in uproar. Fishermen shouted from boat to boat. Women dragged children up the steps from the quay. Somewhere a bell was ringing, a deep, flat, urgent note, and over it all a high thin sound rose that Ilka had heard only twice in her life, the sound of the Veyl singing.
+
+"Davin!" she cried. "Davin!"
+
+She found his boat at the end of the east pier, rocking gently on water that did not seem to move. He was on deck, tying down a net, in no hurry at all.
+
+"Ilka," he said, and smiled. "You look like a runaway kite."
+
+"The tide's early. It's the harrowtide. It's *now*. You have to leave the boat, Davin, you have to come off the pier—"
+
+"Slow down."
+
+"There's no time!"
+
+He looked past her at the horizon, and his smile slid away.
+
+---
+
+They almost made it.
+
+They were halfway along the pier when the first of the Veyl reached the shore. It did not crash, because the harrowtide never crashed. It simply rose, silent and enormous, a glassy green wall with a thousand pale shapes drifting inside it, and it came up the beach and over the quay and across the boats as softly as a hand drawing a sheet over a sleeper.
+
+Ilka felt it reach her ankles, her knees, her waist. It was cold, but not the cold of water. It was the cold of a very old memory. She could hear voices in it, tiny and distant: a lullaby in a language she had never learned, a boat creaking, a girl's laugh. The Veyl was not just water. It was everything the sea had ever kept.
+
+"Hold on!" Davin shouted, and gripped her arm.
+
+The pier groaned. And then, very gently, it let go of the shore.
+
+---
+
+When Ilka opened her eyes, she was lying on the slate floor of the Chartroom, soaked to the skin, with Teshwen's face above her and a blanket of coarse grey wool around her shoulders.
+
+"Davin," she whispered.
+
+"Alive," said Teshwen. "On the second landing, being sick into a bucket." The old woman's mouth quirked. "He will live to be insufferable."
+
+Ilka laughed. It turned into a sob halfway through, and Teshwen held her for a moment, firmly, and then let her go.
+
+"The harrowtide," Ilka said. "It came early. The salt said it would take the pier, but it didn't say *when*."
+
+"No." Teshwen stood. "Salt never says when. That is the third thing a cartographer learns, and the hardest." She crossed the Chartroom to the great slate table. The map lay where Ilka had left it, a pale web of white and grey, with the dark thrennet knot gathered on the east pier. "Come and look."
+
+Ilka rose, trembling. She went to the table.
+
+Where the east pier had been on the slate, there was now no salt at all. The grooves were empty and clean, as if the grains had never been there. And beyond the old coastline, in the space where yesterday the map had shown only open water, a new shape had grown: a long, curved finger of white, pointing out into the Veyl.
+
+"A headland," whispered Ilka.
+
+"A new one. It rose with the tide." Teshwen touched the edge of it, very lightly. "The salt knew. It always knows. It just could not tell us until the sea had finished speaking."
+
+"Then the map is..."
+
+"The map is alive," said Teshwen. "It is the one thing in this world that is. Do you understand now why we pour it by hand?"
+
+Ilka looked at her own hands. They were still shaking. Salt clung to the creases of her palms, fine and white, and she realised, with a slow shock, that it was not the salt she had poured. It was *new* salt. The Veyl had carried it into the tower with the tide and left it on her like a signature.
+
+"I think," she said, "I think I'm ready to pour."
+
+"No," said Teshwen. "You are ready to be afraid of it, which is better."
+
+---
+
+They did not rebuild the east pier. By the next season, the fishermen of Ossamere had learned to moor to the new headland, which they called the Finger, and which the children, who were not afraid of anything, called the Tail. Davin sold his boat and bought a smaller one, and swore he would never again sleep aboard it, and slept aboard it every night.
+
+And in the high cold Chartroom, on the first morning of the new season, Ilka Varn took up the horn bowl of grey salt, and the horn bowl of white, and the horn bowl that glittered like a bruise, and poured the first map that was entirely her own.
+
+It took her all day. She did not rush. She watched the salt settle and shiver, remembering the shape of the world, and when the last grain fell into place she stepped back and saw what she had made: a coast, a harbour, a headland, and out beyond them, drawn in a pale line she had not meant to place there, a single small curve in the Veyl, like the opening of a door.
+
+"There," said Teshwen, who had been watching from the stairs. "Now you have told the sea something. Let us see what it says back."
+
+----------------------------------------------------------------
+VOICE REFERENCE (for the translator)
+----------------------------------------------------------------
+- Narration: lyrical, calm, with concrete imagery. Fantasy terms are
+  used as if the reader already lives in this world: no in-text
+  explanation beyond what the story gives.
+- Teshwen: old, laconic, dry, authoritative. Speaks in short,
+  proverb-like lines.
+- Ilka: young, anxious, earnest; speaks quickly when afraid.
+- Davin: easygoing, teasing, a little reckless.
+- Names are invented; transliterate phonetically and keep identical.
+
+----------------------------------------------------------------
+INVENTED TERMS (translate or transliterate ONCE; keep consistent)
+----------------------------------------------------------------
+Term           | Meaning in the story            | Suggested approach
+---------------|---------------------------------|---------------------
+Ossamere       | Town where land meets the Veyl  | Transliterate: অসামির
+                                                    style, keep one spelling
+the Veyl       | The shifting, living sea        | Transliterate (ভেইল)
+                                                    or coin a descriptive name;
+                                                    use ONE form throughout
+harrowtide     | Seasonal silent flood that      | Coin a compound
+               | reshapes the coast (twice/year) | reflecting "harrow" (to
+                                                    plough/devastate) + "tide"
+                                                    (জোয়ার); keep identical
+thrennet       | Bruise-coloured salt that shows | Transliterate (থ্রেনেট);
+               | the pull of the future tide     | it is a name, not a
+                                                    translated word
+salt map       | A map poured in salt            | নুনের মানচিত্র / লবণের
+                                                    মানচিত্র; pick one
+Chartroom      | Mapmaking room in the tower     | Keep as a compound noun
+the Finger /   | New headland formed by the      | Both names must appear:
+the Tail       | harrowtide; adults vs. children | "আঙুল" / "লেজ" is one option
+                                                    (adult vs. child usage)
+cartographer   | Mapmaker (guild role)           | মানচিত্রকার
+horn bowls     | Containers for the salts        | শিঙের বাটি
+
+KEY LINES (keep tone and wording faithful)
+- "Salt never says when."
+- "We are not here to be sad about the sea. We are here to be early."
+- "Now you have told the sea something. Let us see what it says back."
+================================================================

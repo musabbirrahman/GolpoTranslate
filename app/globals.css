@@ -8,6 +8,10 @@
     --text-muted: #57534E;
     --border-hairline: #E5E0D8;
     --accent-primary: #9A3412;
+    --font-cormorant: "Cormorant Garamond", Georgia, serif;
+    --font-jakarta: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+    --font-noto-serif-bengali: "Noto Serif Bengali", "Kohinoor Bangla", "Bangla Sangam MN", "Nirmala UI", serif;
+    --font-jetbrains-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
   }
 
   body {

@@ -57,6 +57,7 @@ export interface TerminologyMemoryItem {
   id: string;
   englishTerm: string;
   banglaTranslation: string;
+  explanatoryMeaning?: string;
   acceptedAlternatives?: string[];
   avoidTranslations?: string[];
   category: TerminologyCategory;
@@ -141,7 +142,22 @@ export type ParagraphRefinementAction =
   | 'conversational_dialogue'
   | 'simpler_language'
   | 'more_expressive'
-  | 'match_author_style';
+  | 'match_author_style'
+  | 'issue_guided_repair';
+
+export interface ParagraphRepairIssueInput {
+  id?: string;
+  type: VerificationIssueType;
+  severity: 'high' | 'medium' | 'low';
+  paragraphIndex?: number;
+  description: string;
+  englishExcerpt?: string;
+  banglaExcerpt?: string;
+  expectedBangla?: string;
+  detectedBanglaVariant?: string;
+  source?: 'ai_stage5' | 'deterministic_lint';
+  lintReason?: TerminologyFindingReason;
+}
 
 export interface ParagraphPair {
   index: number;

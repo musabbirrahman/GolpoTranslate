@@ -14,6 +14,7 @@ import type {
   VerificationIssue,
   VerificationReport,
 } from '@/lib/types';
+import { isNumericalDeterministicIssue } from '@/lib/terminology';
 
 interface VerificationAndEditorialPanelProps {
   editorialNotes: string[];
@@ -23,9 +24,11 @@ interface VerificationAndEditorialPanelProps {
   isAnyStageRunning?: boolean;
   isRunningStage4: boolean;
   isRunningStage5: boolean;
+  refiningParagraphIndex?: number | null;
   onRunStage4: () => void;
   onRunStage5: () => void;
   onApplySuggestedFix: (issue: VerificationIssue) => void;
+  onRepairParagraphWithIssue?: (issue: VerificationIssue) => void;
   onMarkIssueResolved: (issueId: string) => void;
 }
 
@@ -39,9 +42,11 @@ export default function VerificationAndEditorialPanel({
   isAnyStageRunning = false,
   isRunningStage4,
   isRunningStage5,
+  refiningParagraphIndex = null,
   onRunStage4,
   onRunStage5,
   onApplySuggestedFix,
+  onRepairParagraphWithIssue,
   onMarkIssueResolved,
 }: VerificationAndEditorialPanelProps) {
   const isPartialSummary = Boolean(
@@ -52,14 +57,31 @@ export default function VerificationAndEditorialPanel({
     verificationReport?.fidelitySummary &&
       /^Deterministic terminology check/i.test(verificationReport.fidelitySummary)
   );
-  const hasUnresolvedHigh = Boolean(
-    verificationReport?.issues.some((i) => i.severity === 'high' && !i.resolved)
-  );
-  const isFullVerified = Boolean(
+  const unresolvedIssues =
+    verificationReport?.issues.filter((i) => !i.resolved) ?? [];
+  const unresolvedHighCount = unresolvedIssues.filter(
+    (i) => i.severity === 'high'
+  ).length;
+  const unresolvedMediumCount = unresolvedIssues.filter(
+    (i) => i.severity === 'medium'
+  ).length;
+  const hasUnresolvedHigh = unresolvedHighCount > 0;
+  const hasUnresolvedMedium = unresolvedMediumCount > 0;
+
+  // Whether the Stage 5 AI audit covered all current chapter paragraphs
+  const isAuditCoverageComplete = Boolean(
     verificationReport &&
       isVerificationComplete &&
       !isPartialSummary &&
       !isDeterministicOnly
+  );
+
+  // Whether the chapter is both fully audited AND free of unresolved high/medium review items
+  const isEditorialPass = Boolean(
+    isAuditCoverageComplete &&
+      verificationReport?.isComplete &&
+      !hasUnresolvedHigh &&
+      !hasUnresolvedMedium
   );
 
   const stage5Disabled = isAnyStageRunning || isRunningStage4 || isRunningStage5;
@@ -67,17 +89,34 @@ export default function VerificationAndEditorialPanel({
 
   let coverageStatusLabel = 'Partial / Outdated Verification · Re-run Stage 5';
   let coverageStatusColor = 'text-[#D97706]';
+  let editorialStatusLabel = 'Audit Incomplete · Stage 5 Required';
+  let editorialStatusColor = 'text-[#D97706]';
 
   if (isDeterministicOnly) {
     coverageStatusLabel = 'Terminology Pre-Check Only · Stage 5 Not Run';
     coverageStatusColor = 'text-[#D97706]';
-  } else if (isFullVerified) {
-    if (verificationReport?.isComplete && !hasUnresolvedHigh) {
+    editorialStatusLabel =
+      unresolvedIssues.length > 0
+        ? `${unresolvedIssues.length} Pre-Check Discrepanc${unresolvedIssues.length === 1 ? 'y' : 'ies'} · Stage 5 Required`
+        : 'Stage 5 Audit Not Yet Run';
+  } else if (isAuditCoverageComplete) {
+    if (isEditorialPass) {
       coverageStatusLabel = 'Full Chapter Verified';
       coverageStatusColor = 'text-[#16A34A]';
+      editorialStatusLabel =
+        unresolvedIssues.length > 0
+          ? `Editorial Pass (${unresolvedIssues.length} Minor Stylistic Note${unresolvedIssues.length === 1 ? '' : 's'})`
+          : 'Editorial Pass · Ready';
+      editorialStatusColor = 'text-[#16A34A]';
     } else {
       coverageStatusLabel = 'Full Chapter Audited · Review Needed';
       coverageStatusColor = 'text-[#D97706]';
+      editorialStatusLabel = hasUnresolvedHigh
+        ? `${unresolvedHighCount} High-Priority Discrepanc${unresolvedHighCount === 1 ? 'y' : 'ies'} Require Review`
+        : hasUnresolvedMedium
+          ? `${unresolvedMediumCount} Editorial Discrepanc${unresolvedMediumCount === 1 ? 'y' : 'ies'} Require Review`
+          : 'Editorial Review Needed';
+      editorialStatusColor = 'text-[#D97706]';
     }
   }
 
@@ -115,11 +154,16 @@ export default function VerificationAndEditorialPanel({
           <div className="space-y-5">
             {/* Summary Banner */}
             <div className="p-4 rounded-xl bg-[#FAF8F5] border border-[#E5E0D8] flex flex-wrap items-center justify-between gap-4">
-              <div className="space-y-1 flex-1">
+              <div className="space-y-1.5 flex-1">
                 <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-[#1C1917]">
                   <span>Verification Coverage</span>
                   <span aria-hidden="true">·</span>
                   <span className={coverageStatusColor}>{coverageStatusLabel}</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-[11px] font-medium text-[#57534E]">
+                  <span>Editorial Review Status</span>
+                  <span aria-hidden="true">·</span>
+                  <span className={editorialStatusColor}>{editorialStatusLabel}</span>
                 </div>
                 <p className="text-xs text-[#57534E] leading-relaxed">
                   {verificationReport.fidelitySummary}
@@ -136,7 +180,7 @@ export default function VerificationAndEditorialPanel({
                       Not Yet Audited
                     </div>
                   </>
-                ) : isFullVerified ? (
+                ) : isAuditCoverageComplete ? (
                   <>
                     <div className="text-[11px] text-[#78716C]">Fidelity Score</div>
                     <div className="font-display text-3xl font-semibold text-[#1C1917] font-mono-num">
@@ -189,6 +233,11 @@ export default function VerificationAndEditorialPanel({
                     issue.suggestedFix.trim().length > 0 &&
                     BANGLA_SCRIPT_RE.test(issue.suggestedFix);
 
+                  const isNumericalCheck = isNumericalDeterministicIssue(issue);
+                  const isRefiningThisParagraph =
+                    hasValidParagraphIndex &&
+                    refiningParagraphIndex === issue.paragraphIndex;
+
                   return (
                     <div
                       key={issue.id}
@@ -218,7 +267,9 @@ export default function VerificationAndEditorialPanel({
                             <>
                               <span aria-hidden="true">·</span>
                               <span className="text-[11px] font-medium text-[#57534E]">
-                                Glossary Rule Check
+                                {isNumericalCheck
+                                  ? 'Numerical Fact Check'
+                                  : 'Glossary Rule Check'}
                               </span>
                             </>
                           )}
@@ -230,12 +281,27 @@ export default function VerificationAndEditorialPanel({
                             <span>Resolved</span>
                           </span>
                         ) : (
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            {hasValidParagraphIndex && onRepairParagraphWithIssue && (
+                              <button
+                                type="button"
+                                disabled={stage5Disabled || isRefiningThisParagraph}
+                                onClick={() => onRepairParagraphWithIssue(issue)}
+                                className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold text-white bg-[#9A3412] rounded-md hover:bg-[#7C2D12] disabled:opacity-60 cursor-pointer"
+                              >
+                                <Sparkles className="w-3 h-3" />
+                                <span>
+                                  {isRefiningThisParagraph
+                                    ? 'Repairing Paragraph...'
+                                    : 'Repair Paragraph with AI'}
+                                </span>
+                              </button>
+                            )}
                             {canApplyFix && (
                               <button
                                 type="button"
                                 onClick={() => onApplySuggestedFix(issue)}
-                                className="px-3 py-1 text-xs font-semibold text-white bg-[#9A3412] rounded-md hover:bg-[#7C2D12] cursor-pointer"
+                                className="px-3 py-1 text-xs font-semibold text-[#9A3412] bg-[#FAF8F5] border border-[#9A3412]/40 rounded-md hover:bg-[#F3EFEA] cursor-pointer"
                               >
                                 Apply Suggested Fix
                               </button>
@@ -252,6 +318,29 @@ export default function VerificationAndEditorialPanel({
                       </div>
 
                       <p className="text-xs text-[#1C1917]">{issue.description}</p>
+
+                      {(issue.englishExcerpt || issue.banglaExcerpt) && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 p-2.5 bg-[#FAF8F5] border border-[#E5E0D8] rounded-lg text-xs">
+                          {issue.englishExcerpt && (
+                            <div>
+                              <span className="text-[10px] font-semibold uppercase tracking-wide text-[#78716C] block mb-0.5">
+                                Source English Excerpt
+                              </span>
+                              <span className="text-[#1C1917]">{issue.englishExcerpt}</span>
+                            </div>
+                          )}
+                          {issue.banglaExcerpt && (
+                            <div>
+                              <span className="text-[10px] font-semibold uppercase tracking-wide text-[#78716C] block mb-0.5">
+                                Flagged Bangla Excerpt
+                              </span>
+                              <span className="font-bangla text-[#1C1917]">
+                                {issue.banglaExcerpt}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      )}
 
                       {canApplyFix && (
                         <div className="p-3 bg-[#FAF8F5] border border-[#E5E0D8] rounded-lg">

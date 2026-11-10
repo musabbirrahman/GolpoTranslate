@@ -972,11 +972,14 @@ export function applyContinuousBanglaEdit(
 /**
  * Computes consistent completion status and banner messaging for the 5-stage pipeline,
  * ensuring a chapter is never marked completed or given an unqualified green success message
- * while missing translations or unresolved high-severity verification issues remain.
+ * while missing translations, an incomplete Stage 5 audit, or unresolved high-severity verification issues remain.
  */
 export function getPipelineCompletionState(
   paragraphs: ParagraphPair[],
-  verificationIssuesOrHasHigh?: VerificationIssue[] | boolean
+  verificationIssuesOrHasHigh?: VerificationIssue[] | boolean,
+  options?: {
+    isVerificationAuditComplete?: boolean;
+  }
 ): PipelineCompletionState {
   const missingIndices = (paragraphs || [])
     .filter(
@@ -991,11 +994,13 @@ export function getPipelineCompletionState(
       : (verificationIssuesOrHasHigh || []).some(
           (i) => i.severity === 'high' && !i.resolved
         );
+  const isAuditComplete = options?.isVerificationAuditComplete ?? true;
 
   const isComplete =
     paragraphs.length > 0 &&
     !hasMissingTranslations &&
-    !hasUnresolvedHighIssues;
+    !hasUnresolvedHighIssues &&
+    isAuditComplete;
 
   if (hasMissingTranslations) {
     return {
@@ -1023,6 +1028,19 @@ export function getPipelineCompletionState(
       bannerTone: 'warning',
       bannerMessage:
         'Pipeline finished: Accuracy Verification flagged high-priority issues that require editorial review.',
+    };
+  }
+
+  if (!isAuditComplete) {
+    return {
+      isComplete: false,
+      hasMissingTranslations: false,
+      missingIndices: [],
+      hasUnresolvedHighIssues: false,
+      chapterStatus: 'needs_review',
+      bannerTone: 'warning',
+      bannerMessage:
+        'Accuracy Verification audit is incomplete or outdated. Re-run Stage 5 to verify all paragraphs.',
     };
   }
 
@@ -1116,12 +1134,15 @@ export function revertParagraphTranslation(pair: ParagraphPair): ParagraphPair {
 /**
  * Marks a single verification issue as resolved and computes the resulting chapter completion state
  * via `getPipelineCompletionState()`, ensuring dismissing one issue never marks a chapter `completed`
- * while missing translations or other unresolved high-severity issues remain.
+ * while missing translations, an incomplete Stage 5 audit, or other unresolved high-severity issues remain.
  */
 export function resolveVerificationIssue(
   paragraphs: ParagraphPair[],
   issues: VerificationIssue[],
-  issueId: string
+  issueId: string,
+  options?: {
+    isVerificationAuditComplete?: boolean;
+  }
 ): {
   updatedIssues: VerificationIssue[];
   completion: PipelineCompletionState;
@@ -1130,7 +1151,11 @@ export function resolveVerificationIssue(
   const updatedIssues = (issues || []).map((issue) =>
     issue.id === issueId ? { ...issue, resolved: true } : issue
   );
-  const completion = getPipelineCompletionState(paragraphs, updatedIssues);
+  const completion = getPipelineCompletionState(
+    paragraphs,
+    updatedIssues,
+    options
+  );
   return {
     updatedIssues,
     completion,
@@ -1335,24 +1360,71 @@ export function formatFullStoryExport(project: TranslationProject): string {
   return `${header}${chaptersText}\n`;
 }
 
+function isPlaceholderAuthorName(authorName?: string | null): boolean {
+  const trimmed = (authorName ?? '').trim();
+  if (!trimmed) return true;
+  return /^(unknown(\s+author)?|anonymous|n\/a|none|placeholder|অজ্ঞাত(\s+লেখক)?)$/i.test(
+    trimmed
+  );
+}
+
+function isPlaceholderChapterTitle(
+  chapterTitle: string | undefined | null,
+  chapterNumber: number,
+  projectTitle: string,
+  totalChapters: number
+): boolean {
+  const trimmed = (chapterTitle ?? '').trim();
+  if (!trimmed) return true;
+  if (/^chapter\s*\d*$/i.test(trimmed)) return true;
+  if (/^untitled(\s+chapter)?$/i.test(trimmed)) return true;
+  if (
+    totalChapters === 1 &&
+    trimmed.toLowerCase() === (projectTitle ?? '').trim().toLowerCase()
+  ) {
+    return true;
+  }
+  if (
+    new RegExp(`^chapter\\s*${chapterNumber}\\s*:\\s*untitled$`, 'i').test(
+      trimmed
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Exports a bilingual manuscript with Original English and Translated Bangla separated clearly,
- * preserving scene breaks in both English and Bangla sections.
+ * preserving scene breaks and Markdown italics in both English and Bangla sections while omitting
+ * placeholder metadata.
  */
 export function formatBilingualExport(project: TranslationProject): string {
-  const lines: string[] = [
-    `PROJECT: ${project.title}`,
-    `ORIGINAL AUTHOR: ${project.authorName || 'Unknown'}`,
-    `GENRE: ${project.genre || 'Literary Fiction'}`,
-    `SOURCE: ${project.sourceLanguage} -> TARGET: ${project.targetLanguage}`,
-    '====================================================================',
-    '',
-  ];
+  const lines: string[] = [`PROJECT: ${project.title}`];
+
+  if (!isPlaceholderAuthorName(project.authorName)) {
+    lines.push(`ORIGINAL AUTHOR: ${project.authorName.trim()}`);
+  }
+
+  lines.push(`GENRE: ${project.genre || 'Literary Fiction'}`);
+  lines.push(`SOURCE: ${project.sourceLanguage || 'English'}`);
+  lines.push(`TARGET: ${project.targetLanguage || 'Bangla (বাংলা)'}`);
+  lines.push('====================================================================');
+  lines.push('');
 
   for (const ch of project.chapters) {
-    lines.push(`CHAPTER ${ch.number}: ${ch.title}`);
-    lines.push('--------------------------------------------------------------------');
-    lines.push('');
+    if (
+      !isPlaceholderChapterTitle(
+        ch.title,
+        ch.number,
+        project.title,
+        project.chapters.length
+      )
+    ) {
+      lines.push(`CHAPTER ${ch.number}: ${ch.title}`);
+      lines.push('--------------------------------------------------------------------');
+      lines.push('');
+    }
     lines.push('--- [ORIGINAL ENGLISH] ---');
     const englishBody =
       ch.paragraphs.length > 0

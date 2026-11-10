@@ -1,0 +1,5 @@
+{
+  "summary": "Reconciled and revised Independent Technical Review Dossier for GolpoTranslate (prepared for external review by Claude). Adds Section 10.1 Benchmark Artifact Identity Reconciliation Table (with exact SHA-256 hashes, byte counts, and paragraph counts for the 54-, 47-, 5-, and 53-paragraph artifacts vs. post-compaction summary discrepancies), bounds benchmark conclusion claims to tested runs, separates Translation Coverage, Audit Completion, and Editorial Acceptance semantics, qualifies the proposed overallScore >= 80 / unresolvedMediumCount <= 2 acceptance policy, refines numerical deduplication and anti-overfitting severity calibration guidance, and downgrades unverified pre-compaction benchmark claims to REPORTED, NOT REPRODUCED / UNKNOWN / NOT VERIFIED.",
+  "updatedAt": "2026-11-06T13:31:23.083701249Z",
+  "userFacing": true
+}

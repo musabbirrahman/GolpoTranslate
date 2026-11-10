@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useSyncExternalStore } from 'react';
 import Navbar, { type NavTab } from '@/components/Navbar';
 import DashboardView from '@/components/DashboardView';
 import WorkspaceView from '@/components/WorkspaceView';
@@ -28,6 +28,8 @@ import {
 import { alignParagraphs, chunkTextByParagraphs } from '@/lib/chunker';
 import type { SamplePassage } from '@/lib/sample-passages';
 
+const emptySubscribe = () => () => {};
+
 export default function GolpoTranslateApp() {
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
   const [projects, setProjects] = useState<TranslationProject[]>(() => [
@@ -41,6 +43,11 @@ export default function GolpoTranslateApp() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const [isNewModalOpen, setIsNewModalOpen] = useState(false);
   const [autoRunPipelineTrigger, setAutoRunPipelineTrigger] = useState(0);
+  const hasMounted = useSyncExternalStore(
+    emptySubscribe,
+    () => true,
+    () => false
+  );
 
   // Load persisted projects, history, and settings from IndexedDB on mount
   useEffect(() => {
@@ -201,8 +208,20 @@ export default function GolpoTranslateApp() {
     await saveAppSettings(newSettings);
   };
 
+  if (!hasMounted) {
+    return (
+      <div
+        className="min-h-screen flex flex-col bg-[#FAF8F5] text-[#1C1917]"
+        suppressHydrationWarning
+      />
+    );
+  }
+
   return (
-    <div className="min-h-screen flex flex-col bg-[#FAF8F5] text-[#1C1917]">
+    <div
+      className="min-h-screen flex flex-col bg-[#FAF8F5] text-[#1C1917]"
+      suppressHydrationWarning
+    >
       <Navbar
         activeTab={activeTab}
         onSelectTab={setActiveTab}

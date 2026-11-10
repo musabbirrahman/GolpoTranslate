@@ -1,0 +1,221 @@
+PROJECT: The Owing Book
+GENRE: Literary Fiction
+SOURCE: English
+TARGET: Bangla (বাংলা)
+====================================================================
+
+--- [ORIGINAL ENGLISH] ---
+The first thing Ines Varga did on returning to Ostley Reach was apologise to a door. It was her father’s door, green once and now the colour of pond water, and the damp had swollen it until it would open for no one who did not lean into it with a certain hip and a certain amount of faith. She had forgotten the hip. She had not entirely forgotten the faith. “Sorry,” she told the wood, and put her shoulder to it, and it gave way with a groan that sounded very much like being told off.
+
+Inside, the chandlery smelled as it always had: of tar and hemp and lamp oil, and beneath them the cold mineral breath of the mudflats, which got into everything in Ostley Reach: the bread, the wool, the marriages. Coils of rope hung from the beams like the sleeping bodies of enormous bats. Her father had died eleven days earlier, on a Tuesday, on the stool behind the counter, with a pencil in his hand and a customer waiting. The customer, she had been told, stood there a polite quarter of an hour before understanding.
+
+She had come to sell the place. That was the plan, and she held to it the way you hold the rail of a ferry you don’t quite trust.
+
+“You’ll want the book.”
+
+She had not heard the door. Tobiah Quill had the gift, common among lamplighters and cats, of arriving without having been seen to travel. He was seventy-odd and narrow as a boathook, his coat buttoned wrong in a way that suggested it had been wrong for years and the buttons had come to an understanding with it. His face was what it had always been: a gate someone had shut and forgotten.
+
+“Which book, Mr Quill?”
+
+“His. The owing-book.” He said it the way another man might have said *the will*.
+
+“I’m not here for books. I’m here to put a sign in the window.”
+
+“Mm.” Tobiah examined a coil of rope as though it had said something clever. “Nobody’s stopping you, Miss Ines. Only there’s a few in the Reach would like to settle up first. Decent folk. They’d sleep easier.”
+
+“Settle what?”
+
+“Whatever’s written.”
+
+It was under the counter, where she had known it would be without having known she knew: a ledger bound in black oilcloth, its corners worn round as river stones. She had grown up beside it the way you grow up beside a clock, as a thing that was there, that was consulted, that nobody explained. She assumed it held money. Everyone in the Reach ran a little on credit between the herring and the thaw, and her father had been, in his sparing way, the bank.
+
+She bit the bullet and opened it.
+
+It did not hold money.
+
+*Mrs. Pell: one umbrella, black, lent the fourteenth of October. Returned: no.* And beside it, in her father’s small upright hand, a single word in brackets: *(Fine.)*
+
+*The Harbourmaster: owes me the truth about the pigeon.*
+
+*Quill, T.: one game of draughts, owed since the winter of the flood.* This line had been struck through, and then the strike had been struck through, as though the debt had been settled and then, on reflection, re-owed.
+
+*Dessa Holm: an argument, ongoing.*
+
+Beside every entry, in the margin, was a tiny wave, three pencil strokes for a tide-line. Some of the waves had been crossed out. Most had not.
+
+“He lent people things,” Ines said at last. “Umbrellas. Draughts. He never wanted any of it back, did he?”
+
+“Mm.”
+
+“Then why write it down?”
+
+Tobiah considered this with the whole length of his face. “A man’s got to trim his lamp somewhere,” he said. It was the sort of answer the Reach gave to anything that mattered, and it meant, as far as she had ever been able to tell, *ask me again when you’re older*. She was thirty-two. She did not feel she could be asked to wait much longer.
+
+At the door he stopped, one hand on the frame. “Your father went out the Slow Mile at slack water. Every evening, forty years. Called it his visiting hour.”
+
+“Visiting who?”
+
+“Mm,” said Tobiah, and the door, which liked him, let him out without a fight.
+
+Dessa Holm arrived at six with a loaf under one arm and a grievance under the other.
+
+“You look dreadful,” she said, by way of hello. “Good. I’d have been insulted if you’d come home looking well. Sit. Eat. Don’t talk, you’ll only say something sensible and I’ll have to hit you.” She tore the loaf in two with the efficiency of a woman who had been doing it since four that morning. Steam rose from it like a small, warm ghost. “Thirteen years, Ines. Thirteen. I’ve had more word from the man who delivers my flour, and he only writes to say it’s late.”
+
+“I sent postcards.”
+
+“Of weather.”
+
+“It was—” Ines stopped. It had been the only thing the two of them had been able to say. *Fog again*, her father’s cards had read, every winter, in that upright hand, and she had understood perfectly and never answered it. *Fog again* had meant *come home*. Her replies had said *Rain here*, which was a lie, and had meant *I can’t*.
+
+Dessa chewed, watching her. She had always had a way of looking at you as if she were checking whether you were done. “Water under the bridge,” she said finally. “If we had a bridge. We’ve got a ditch and a plank. Water under the plank.” She laughed, and the laugh broke somewhere in the middle, and she covered the break with another mouthful of bread, expertly, like someone tucking a sheet. “He kept our argument going, you know. Twelve years. The Tidebell.”
+
+“The—”
+
+“I said it was the ugliest object in the county. A lump of cold iron, bellowing at people. He said it was the only honest thing in the county, because it only ever told you one thing and never apologised for it. Every Thursday. *Same time next week, Dessa.*” She pushed the heel of the loaf across the counter. “We never finished. You can’t win an argument with a dead man. It’s his last cheap trick.”
+
+Ines took the bread. It was too hot to hold, and she held it anyway.
+
+When Dessa had gone, the shop settled around her, the way a house does when it has stopped pretending to be listening. Rain had come in off the flats without announcing itself and was working at the window with a patient, ticking fingernail. Ines lit the lamp, which was an act so old in her hands that it seemed to have been waiting for them, and turned to the last page of the book.
+
+It was the last entry, and the oldest. The ink had gone the brown of weak tea. *Ines: owes a visit.* The date was the March she had left. There was no bracketed word beside it, neither *(Fine.)* nor anything else. The little wave in the margin stood open, uncrossed. And below it, in a column, ran thirteen tiny ticks, one for each spring, neat as fence posts.
+
+She could not tell whether they were a reproach. That had always been the trouble with her father: the whole of him was margin. She turned the page toward the lamp as though the pencil might confess if it were made warm enough.
+
+Then she looked at the clock, which said ten to seven, and at the pair of boots by the door, which were his.
+
+The Slow Mile was not a mile and not slow, unless you were the sea. It was a path of packed shell laid across the flats, marked with stakes and tattered rags, and it ran out from the foot of the seawall towards a place where a pier had once been and where now only pilings stood, black and bearded, like the stumps of a very old argument. The rain had thinned to something you could only feel. The flats lay open on every side, silver to the edge of the world, and the sky had been set down on top of them like a lid on a pan. Gulls were stitched into it here and there, small and grey and entirely uninterested in her.
+
+His boots were too big. She had put on two pairs of socks and still she walked in them like a child in a parent’s shoes, carried and corrected at the same moment. The shell crunched. Somewhere to her left the mud made the small wet noises of a thing digesting. She did not think about the shop. She did not think about the sign in her bag, which she had written in her best capitals on the train, as if neat lettering might make the decision itself look tidy.
+
+The tallest piling was where she had known it would be. At its foot lay a flat stone, and the stone had a shallow dip worn into it, the exact size and shape of a man who had sat there a great many evenings and not been in any hurry.
+
+She sat in the dip. It fitted her better than she wanted it to.
+
+And then the sea did nothing. That was the strange thing, the thing she had forgotten or never been told. Slack water was not a moment but an hour, the hour in which the tide had finished going out and had not yet decided to come back, and the whole bay held still in the way a person holds still when they are about to say something and have not found the first word. No wind. No gulls now. The light lay on the water without moving, like a coin on a table. She thought, *this is where he put it all*. The things he did not say, the cards that said fog, the ticks in the margin: he had carried them out here every evening and sat them down in the one place that did not need an answer.
+
+*I was a long way off*, she thought, to the water, to the stone, to the dip in it. *I’m here now. It’s late. I know it’s late.*
+
+The water said nothing, which was the Reach’s way of saying everything.
+
+Across the bay, in the harbour, the Tidebell began to ring.
+
+It was exactly as bad as Dessa had said. It had no music in it at all. It was one flat iron note, hammered out over the water again and again, with all the tact of a fist on a table, announcing that the tide had turned and the sea was coming back whether anyone was ready for it or not. Ines listened to it for a long time. She found, with some surprise, that she was smiling, and that her face was wet, and that the two facts were not in disagreement.
+
+“It’s an awful bell,” she said aloud.
+
+The flats gave no answer. She decided, after a moment, that this was his side of the argument, and that he was making it very well.
+
+She took the black book out of her coat, where she had carried it against her ribs like something that might catch cold. The pencil was in the spine. By the last of the light she found the open wave in the margin and drew a line through it, slowly, and beside it, in her own cramped and unfamiliar hand, she wrote a bracketed word of her own, and then, after thinking, changed it.
+
+*(Not fine. Paid.)*
+
+The tide, which has never waited for the sad or the undecided, turned anyway. She sat on in his place and let it bring the evening in around her boots.
+
+--- [TRANSLATED BANGLA (বাংলা অনুবাদ)] ---
+অস্টলি রিচে ফিরে ইনেস ভার্গা প্রথম যে কাজটি করল, তা হলো তার বাবার দরজার কাছে ক্ষমা চাওয়া। সেটি ছিল তার বাবার দরজা, একসময় সবুজ রঙের হলেও এখন তা পুকুরের জলের মতো বর্ণহীন; আর স্যাঁতসেঁতে আবহাওয়ার কারণে সেটি ফুলে গিয়েছিল, ফলে কেউ যদি নির্দিষ্টভাবে কোমর ঠেকিয়ে এবং কিছুটা বিশ্বাসের সাথে ধাক্কা না দিত, তবে তা খোলার উপায় ছিল না। ইনেস সেই কোমরের কৌশলটি ভুলে গিয়েছিল, কিন্তু বিশ্বাসের কথা পুরোপুরি ভোলেনি। "দুঃখিত," সে কাঠের দরজাটিকে বলল এবং তার কাঁধ ঠেকিয়ে চাপ দিল, তাতে সেটি এমন এক গোঙানি দিয়ে খুলে গেল যেন কেউ তাকে বকুনি দিচ্ছে।
+
+ভেতরে ঢুকতেই চ্যান্ডলারির সেই চিরচেনা গন্ধ— আলকাতরা, শণ আর ল্যাম্প অয়েলের গন্ধ। আর তার নিচে কাদাচরের শীতল খনিজ ঘ্রাণ, যা অস্টলি রিচের প্রতিটি জিনিসে মিশে থাকে: রুটি, পশম, এমনকি দাম্পত্যেও। বিশাল বাদুড়ের মতো ঝুলে থাকা দড়ির কুণ্ডলীগুলো বিম থেকে ঝুলে ছিল। তার বাবা এগারো দিন আগে, এক মঙ্গলবার মারা গেছেন, কাউন্টারের পেছনের টুলে বসে, হাতে পেন্সিল নিয়ে, আর একজন খদ্দের অপেক্ষা করছিল। ইনেস শুনেছিল, সেই খদ্দের ভদ্রতাবশত পাক্কা পনেরো মিনিট অপেক্ষা করার পর ব্যাপারটা বুঝতে পেরেছিল।
+
+সে এই জায়গাটা বিক্রি করে দিতে এসেছিল। পরিকল্পনাটা এমনই ছিল, আর সে ঠিক সেভাবেই তা আঁকড়ে ছিল, যেভাবে মানুষ ফেরির রেলিং ধরে থাকে যখন সেটার ওপর পুরোপুরি ভরসা করতে পারে না।
+
+"তুমি নিশ্চয়ই বইটা খুঁজছ।"
+
+সে দরজা খোলার শব্দ শোনেনি। টোবিয়া কুইলের একটা সহজাত ক্ষমতা ছিল, বাতিওয়ালা আর বিড়ালদের মতো, যারা কোনো শব্দ না করেই উপস্থিত হতে পারে। সত্তরোর্ধ্ব বৃদ্ধ, শরীরের গড়ন অনেকটা নৌকার বৈঠার মতো সরু, কোটটা ভুলভাবে বোতাম লাগানো—যেমনটা বছরের পর বছর ধরে হয়ে আসছে এবং বোতামগুলোও যেন সেই ভুলের সাথেই মানিয়ে নিয়েছে। তার মুখটা চিরকাল যেমন ছিল তেমনই: এমন এক দরজা যা কেউ বন্ধ করে দিয়ে ভুলে গেছে।
+
+"কোন বই, মিস্টার কুইল?"
+
+"ওর বইটা। ওই ঋণ-খাতা।" কথাটি তিনি এমনভাবে বললেন যেন অন্য কেউ হয়তো *উইল*-এর কথা বলত।
+
+"আমি কোনো বইয়ের জন্য আসিনি। আমি এসেছি জানালায় একটা বিক্রি করার নোটিশ লাগাতে।"
+
+"হুঁ।" টোবিয়া দড়ির একটা কুণ্ডলী এমনভাবে পরীক্ষা করলেন যেন ওটা কোনো বুদ্ধিদীপ্ত কথা বলেছে। "কেউ তোমাকে বাধা দিচ্ছে না, মিস ইনেস। তবে রিচের কিছু মানুষ আছে যারা আগে দেনা শোধ করতে চায়। ভদ্র মানুষ। তারা নিশ্চিন্তে ঘুমাতে পারত।"
+
+"কীসের দেনা?"
+
+"যা কিছু লেখা আছে।"
+
+খাতাটা কাউন্টারের নিচে ছিল, ঠিক যেখানে সে জানত ওটা আছে, যদিও সে জানত না যে সে আসলে জানত। কালো অয়েলক্লথে বাঁধানো একটি খাতা, যার কোণাগুলো নদীর পাথরের মতো মসৃণ হয়ে গেছে। সেটার পাশে থেকেই সে বড় হয়েছে, যেভাবে মানুষ ঘড়ির পাশে বড় হয়; একটা জিনিস যা সেখানে ছিল, যা দেখা হতো, যা নিয়ে কেউ কখনো ব্যাখ্যা দিত না। সে ভেবেছিল ওটার মধ্যে টাকার হিসাব আছে। রিচের প্রত্যেকেই হেরিং মাছ ধরা আর বরফ গলার মাঝের সময়ে কিছুটা ধারে চলত, আর তার বাবা ছিলেন তাঁর মিতভাষী স্বভাবের সুবাদে, এই এলাকার ব্যাংক।
+
+ইনেস দীর্ঘশ্বাস ফেলে সাহস সঞ্চয় করল এবং খাতাটা খুলল।
+
+ওটার মধ্যে কোনো টাকার হিসাব ছিল না।
+
+*মিসেস পেল: একটি ছাতা, কালো, চৌদ্দই অক্টোবর ধার দেওয়া হয়েছে। ফেরত: না।* আর তার পাশে, তার বাবার ছোট ও সোজা হাতের লেখায় বন্ধনীর ভেতর একটি শব্দ: *(ঠিক আছে।)*
+
+*হারবারমাস্টার: পায়রাটার ব্যাপারে সত্যটা আমাকে এখনো দেয়নি।*
+
+*কুইল, টি.: ড্রাফটস খেলার এক দান, বন্যার শীতকাল থেকে বাকি।* লাইনটা আড়াআড়ি দাগ দিয়ে কাটা ছিল, আর সেই দাগের ওপর আবার দাগ টানা হয়েছিল, যেন দেনাটা শোধ হয়েছিল এবং তারপর ভাবনার পর, আবার বাকি থেকে গেছে।
+
+*ডেসা হোল্ম: একটা তর্ক, চলমান।*
+
+প্রতিটি এন্ট্রির পাশে মার্জিনে ছিল একটি ছোট্ট ঢেউ, জোয়ারের দাগ বোঝাতে পেন্সিলের তিনটি টান। কিছু ঢেউ কাটা ছিল। অধিকাংশ ছিল না।
+
+"উনি মানুষদের জিনিস ধার দিতেন," ইনেস অবশেষে বলল। "ছাতা। ড্রাফটস। উনি তো এর কিছুই ফেরত চাইতেন না, তাই না?"
+
+"হুঁ।"
+
+"তাহলে ওগুলো লিখে রাখার কী দরকার ছিল?"
+
+টোবিয়া কুইল তাঁর পুরো মুখটা নিয়ে বিষয়টি বিবেচনা করলেন। তিনি বললেন, "মানুষকে তো কোথাও না কোথাও তার বাতির সলতেটা ছাঁটতেই হয়।" রিচের কোনো গুরুত্বপূর্ণ বিষয়ে এটাই ছিল সাধারণ উত্তর, আর যতদূর ইনেস বুঝেছে, এর মানে হলো, *তুমি যখন আরও বড় হবে, তখন আবার জিজ্ঞেস কোরো।* ইনেসের বয়স এখন বত্রিশ। তার মনে হলো না যে, তাকে আর বেশি অপেক্ষা করতে বলাটা যুক্তিসঙ্গত।
+
+দরজার কাছে গিয়ে তিনি থামলেন, এক হাত দরজার কাঠামোর ওপর। "তোমার বাবা জোয়ার-ভাটার সন্ধিক্ষণে স্লো মাইল ধরে বেরিয়ে যেতেন। প্রতি সন্ধ্যায়, চল্লিশ বছর ধরে। এটাকে তিনি বলতেন তার সাক্ষাতের সময়।"
+
+"কার সঙ্গে দেখা করতে?"
+
+"হুঁ," বললেন টোবিয়া, আর দরজাটি, যে কিনা তাকে পছন্দই করত, কোনো বাধা ছাড়াই তাকে বেরিয়ে যেতে দিল।
+
+ডেসা হোল্ম এল ছটা নাগাদ, এক বগলে এক টুকরো রুটি আর অন্যটিতে একরাশ অভিযোগ নিয়ে।
+
+অভিবাদন জানানোর বদলে সে বলল, "তোমাকে বড্ড বাজে দেখাচ্ছে। ভালো। তুমি যদি সুস্থ-সবল হয়ে বাড়ি ফিরতে, তবে আমি অপমানিত বোধ করতাম। বোসো। খাও। কথা বোলো না, তুমি কোনো বুদ্ধিদীপ্ত কথা বলবে আর আমাকে তখন তোমাকে মারতে হবে।" সে রুটিটাকে এমন দক্ষতায় দুই টুকরো করল, যেন ভোর চারটে থেকে সে এই কাজই করে আসছে। রুটি থেকে ভাপ উঠল, যেন এক ছোট্ট, উষ্ণ প্রেতাত্মা। "তেরো বছর, ইনেস। তেরোটা বছর। যে লোক আমার ময়দা পৌঁছে দেয়, তার কাছ থেকেও আমি বেশি খবর পেয়েছি, যদিও সে শুধু লেখে যে মাল আসতে দেরি হবে।"
+
+"আমি পোস্টকার্ড পাঠিয়েছিলাম।"
+
+"আবহাওয়ার খবর নিয়ে।"
+
+"সেটা ছিল—" ইনেস থেমে গেল। এটিই ছিল একমাত্র কথা যা তাদের দুজনেরই বলার ছিল। তার বাবার কার্ডে প্রতি শীতে সেই খাড়া হাতের লেখায় লেখা থাকত, *আবার কুয়াশা*, আর সে তা পুরোপুরি বুঝেও কখনও উত্তর দেয়নি। *আবার কুয়াশা* মানে ছিল *বাড়ি ফিরে এসো*। ইনেসের উত্তরে লেখা থাকত *এখানে বৃষ্টি*, যা ছিল একটি মিথ্যা, আর তার মানে ছিল *আমি পারব না*।
+
+ডেসা চিবোতে চিবোতে তাকে দেখছিল। সে সব সময় এমনভাবে তাকাত যেন সে যাচাই করছে তুমি ঠিকমতো তৈরি হয়েছ কি না। সে শেষমেশ বলল, "সেতু দিয়ে কত জল গড়িয়ে গেল, তাই না? যদি আমাদের কোনো সেতু থাকত। আমাদের আছে শুধু একটা নালা আর একটা তক্তা। তক্তার নিচ দিয়ে জল গড়িয়ে যায়।" সে হাসল, আর সেই হাসি মাঝপথে ভেঙে গেল। সে দক্ষতার সঙ্গে আরেকবার রুটি মুখে পুরে সেই ভাঙা সুর ঢাকল, ঠিক যেন কেউ চাদর গুছিয়ে রাখছে। "সে আমাদের তর্কটা জিইয়ে রেখেছিল, জানো তো। বারো বছর। টাইডবেল নিয়ে।"
+
+"টাইডবেল—"
+
+"আমি বলতাম ওটা এই অঞ্চলের সবচেয়ে বিশ্রী বস্তু। এক টুকরো ঠান্ডা লোহার দলা, মানুষের ওপর চিৎকার করছে। তিনি বলতেন ওটা এই অঞ্চলের একমাত্র সৎ জিনিস, কারণ ওটা তোমাকে শুধু একটা কথাই বলে আর তার জন্য কখনো ক্ষমা চায় না। প্রতি বৃহস্পতিবার। *পরের সপ্তাহে একই সময়ে দেখা হবে, ডেসা।*" সে রুটির শেষ অংশটুকু কাউন্টারের ওপর ঠেলে দিল। "আমরা কোনোদিনই শেষ করতে পারিনি। মৃত মানুষের সঙ্গে কোনো তর্কে জেতা যায় না। এটা তার শেষ সস্তা চাল।"
+
+ইনেস রুটিটা নিল। ধরে রাখার পক্ষে ওটা বড্ড গরম ছিল, তবু সে ওটা ধরেই রইল।
+
+ডেসা চলে যাওয়ার পর দোকানটা তার চারপাশে থিতু হয়ে বসল, ঠিক যেমনটা কোনো ঘর করে যখন সে আর শোনার ভান করে না। কোনো ঘোষণা ছাড়াই কাদাচর থেকে বৃষ্টি এসে জানালাটায় তার আঙুলের ডগা দিয়ে আলতো করে ঠকঠক করতে লাগল। ইনেস বাতি জ্বালাল, যে কাজটা তার হাতের কাছে এত পুরনো যে মনে হলো বাতিটি যেন তার ফেরার অপেক্ষায় ছিল। সে বইয়ের শেষ পৃষ্ঠার দিকে ফিরল।
+
+এটিই ছিল শেষ এন্ট্রি, এবং সবচেয়ে পুরনো। কালির রঙ লিকার চায়ের মতো ফ্যাকাশে হয়ে গেছে। *ইনেস: একটা দেখা বাকি।* তারিখটি ছিল মার্চের সেই দিন, যেদিন সে চলে গিয়েছিল। পাশে কোনো বন্ধনীতে কিছু লেখা ছিল না, *(ঠিক আছে।)* বা অন্য কিছুই না। মার্জিনে আঁকা ছোট ঢেউটি খোলা, কোনো দাগ কাটা হয়নি। আর তার নিচে, সারিবদ্ধভাবে তেরোটি ক্ষুদ্র দাগ, প্রতিটি বসন্তের জন্য একটি করে, খুঁটির মতো পরিপাটি।
+
+সে বুঝতে পারল না এগুলো কোনো তিরস্কার কি না। তার বাবার ক্ষেত্রে সমস্যাটা এখানেই ছিল: তাঁর পুরো সত্তাই ছিল এক অস্পষ্ট মার্জিন। সে পৃষ্ঠাটা বাতির দিকে ঘোরাল, যেন পেন্সিলের আঁচড়গুলো আরও একটু গরম পেলে নিজেই সব স্বীকার করে নেবে।
+
+এরপর সে ঘড়িটার দিকে তাকাল, তখন সাতটা বাজতে দশ মিনিট বাকি, আর দরজার পাশে রাখা বুটজোড়াটার দিকে তাকাল, যেটা ছিল বাবার।
+
+স্লো মাইল পথটা আসলে এক মাইলও ছিল না, আর সমুদ্রের চোখে না দেখলে তাকে ধীরও বলা চলত না। ওটা ছিল কাদাচরের ওপর দিয়ে চলে যাওয়া শক্ত শামুক-ঝিনুকের এক পথ, যা খুঁটি আর জরাজীর্ণ কাপড়ের টুকরো দিয়ে চিহ্নিত করা ছিল। সমুদ্রের বাঁধের নিচ থেকে শুরু হয়ে ওটা এমন এক জায়গায় গিয়ে মিশত যেখানে এককালে জেটি ছিল; এখন সেখানে শুধু দাঁড়িয়ে আছে কালো আর শ্যাওলা-দাড়ির মতো ঝুলে থাকা থামগুলো, অনেকটা যেন খুব পুরোনো কোনো তর্কের অবশিষ্টাংশ। বৃষ্টি কমে এসে এমন এক পর্যায়ে ঠেকেছিল যা শুধু অনুভবই করা যায়। কাদাচরগুলো সব দিকে খোলা পড়ে ছিল, দিগন্তের প্রান্ত পর্যন্ত রুপালি, আর আকাশটাকে যেন একটা কড়াইয়ের ঢাকনার মতো সেগুলোর ওপর নামিয়ে রাখা হয়েছিল। গাঙচিলগুলো সেখানে এখানে-ওখানে গাঁথা ছিল, ছোট আর ধূসর, যারা তাকে নিয়ে পুরোপুরি উদাসীন।
+
+বাবার বুটজোড়াটা ছিল বড্ড বড়। ইনেস দুটো মোজা পরে নিয়েছিল, তাও সে ওগুলোতে এমনভাবে হাঁটছিল যেন কোনো শিশুর তার অভিভাবকের জুতো পরা; একই সঙ্গে তাকে কেউ বহন করে নিয়ে চলছে আবার সংশোধনও করছে। পায়ের নিচে শামুক-ঝিনুকের খোলসগুলো মড়মড় করে উঠছিল। তার বাঁ দিকে কোথাও কাদা যেন কোনো কিছু হজম করার সময় ভেজা ছোট ছোট শব্দ করছিল। সে দোকানটার কথা ভাবল না। সে তার ব্যাগে থাকা সেই সাইনবোর্ডটার কথাও ভাবল না, যেটা সে ট্রেনে বসে বড় হাতের অক্ষরে লিখেছিল, যেন পরিষ্কার হাতের লেখা এই সিদ্ধান্তটাকেই গোছানো দেখাবে।
+
+সবচেয়ে উঁচু থামটা ঠিক সেখানেই ছিল যেখানে সে জানত ওটা থাকার কথা। এর গোড়ায় একটা চ্যাপ্টা পাথর পড়ে ছিল, আর পাথরটার গায়ে একটা অগভীর খাঁজ ক্ষয়ে তৈরি হয়েছিল, যেটা ঠিক সেই মাপ আর আকৃতির—যেখানে একজন মানুষ বহু সন্ধ্যা ধরে বসে থাকতেন, আর কোনো তাড়া অনুভব করতেন না।
+
+সে সেই খাঁজটায় গিয়ে বসল। এটা তার ধারণার চেয়েও বেশি নিখুঁতভাবে তাকে মানিয়ে নিল।
+
+আর তখনই সমুদ্র স্থির হয়ে গেল। এটাই ছিল অদ্ভুত ব্যাপার, সেই বিষয়টা যা সে হয়তো ভুলে গিয়েছিল অথবা তাকে কখনোই কেউ বলেনি। জোয়ার-ভাটার সন্ধিক্ষণ কোনো মুহূর্ত নয়, বরং একটা পুরো ঘণ্টা, সেই সময় যখন ভাটা শেষ হয়ে গেছে কিন্তু জোয়ার আবার আসার সিদ্ধান্ত নেয়নি। পুরো উপসাগরটা এমনভাবে স্থির হয়ে রইল যেমনটা কেউ স্থির হয়ে থাকে যখন সে কিছু একটা বলার প্রস্তুতি নেয়, অথচ প্রথম শব্দটিই খুঁজে পায় না। কোনো বাতাস নেই। গাঙচিলগুলোও এখন নীরব। আলোটা জলের ওপর কোনো নড়াচড়া ছাড়াই পড়ে ছিল, যেন টেবিলের ওপর রাখা একটা মুদ্রা। সে ভাবল, *এই সেই জায়গা যেখানে তিনি সবটা জমা রাখতেন*। যেসব কথা তিনি বলতেন না, যে কার্ডগুলোতে শুধু কুয়াশা লেখা থাকত, খাতার মার্জিনে দেওয়া টিকচিহ্নগুলো: প্রতি সন্ধ্যায় তিনি এগুলো এখানে নিয়ে আসতেন এবং ঠিক সেই জায়গাটিতে রেখে দিতেন, যেখানে কোনো উত্তরের প্রয়োজন ছিল না।
+
+*আমি অনেক দূরে ছিলাম*, সে জলের উদ্দেশে, পাথরের উদ্দেশে, আর পাথরের খাঁজটার উদ্দেশে মনে মনে বলল। *আমি এখন এখানে। অনেক দেরি হয়ে গেছে। আমি জানি বড্ড দেরি হয়ে গেছে।*
+
+জল কোনো উত্তর দিল না, আর রিচের ভাষায় এটাই ছিল সব কিছু বলে দেওয়ার ভঙ্গি।
+
+উপসাগরের ওপারে, হারবারে, টাইডবেল বাজতে শুরু করল।
+
+এটা ঠিক ততটাই বিশ্রী ছিল যতটা ডেসা বলেছিল। এর মধ্যে কোনো সুরই ছিল না। ওটা ছিল একটা সমতল লোহার আওয়াজ, যা জলের ওপর বারবার আঘাত করে বাজছিল; টেবিলে ঘুষি মারার মতোই রূঢ় ও রাখঢাকহীনভাবে সে ঘোষণা করছিল যে জোয়ার ফিরে এসেছে, আর কেউ প্রস্তুত থাকুক বা না থাকুক, সমুদ্র আসছেই। ইনেস অনেকক্ষণ ধরে সেটা শুনল। সে অবাক হয়ে খেয়াল করল যে সে হাসছে, তার মুখটা ভিজে গেছে, আর এই দুটি বিষয়ের মধ্যে কোনো বিরোধ নেই।
+
+"কী বিশ্রী একটা ঘণ্টা," সে জোর গলায় বলল।
+
+কাদাচর কোনো উত্তর দিল না। কিছুক্ষণ পর সে ঠিক করল, এটাই বোধহয় সেই তর্কে বাবার অবস্থান, আর তিনি সেটা খুব ভালোভাবেই তুলে ধরছেন।
+
+সে তার কোটের ভেতর থেকে কালো খাতাটি বের করল, যেখানে সে ওটাকে নিজের পাঁজরের কাছে এমনভাবে আগলে রেখেছিল যেন ওটা কোনো ঠাণ্ডা লেগে যাওয়া জিনিস। পেন্সিলটা ছিল বইয়ের ভাঁজে। শেষ বিকেলের আলোয় সে মার্জিনে আঁকা খোলা ঢেউয়ের চিহ্নটা খুঁজে বের করল এবং তার ওপর দিয়ে পেন্সিল চালিয়ে ধীরে ধীরে একটা দাগ টেনে দিল। তার পাশে নিজের ছোট ছোট আর অপরিচিত হাতের লেখায় সে বন্ধনীতে একটা শব্দ লিখল, তারপর খানিকক্ষণ ভেবে সেটা বদলে দিল।
+
+*(ঠিক নেই। শোধ।)*
+
+জোয়ার, যা কখনোই দুঃখী বা দ্বিধাগ্রস্তদের জন্য অপেক্ষা করে না, নিয়ম মেনেই মোড় নিল। সে তার বাবার জায়গায় বসে রইল এবং জোয়ারের জলকে তার বুটজোড়াকে ঘিরে সন্ধ্যা নামিয়ে আনতে দিল।
+
+====================================================================

@@ -5,6 +5,7 @@ import type {
   ParagraphPair,
   Stage1CoverageMetadata,
   StoryContextProfile,
+  StyleProfile,
   TerminologyCategory,
   TerminologyFindingClassification,
   TerminologyFindingReason,
@@ -13,8 +14,14 @@ import type {
   TerminologySource,
   TranslationProject,
   VerificationIssue,
+  VerificationIssueType,
   VerificationReport,
 } from './types';
+import {
+  chunkTextByParagraphs,
+  joinParagraphsWithSceneBreaks,
+  type TextChunk,
+} from './chunker';
 
 const VALID_CATEGORIES: ReadonlySet<TerminologyCategory> = new Set<TerminologyCategory>([
   'name',
@@ -232,6 +239,38 @@ const KNOWN_EQUIVALENT_CLUSTERS: ReadonlyArray<{
   {
     englishKeys: ['loupe', 'loupes', 'magnifying glass'],
     banglaVariants: ['আতশ কাচ', 'ম্যাগনিফাইং গ্লাস', 'বিবর্ধক কাচ'],
+  },
+  {
+    englishKeys: ['quoin', 'quoins', 'brass quoin', 'brass quoins'],
+    banglaVariants: ['কোইন', 'পিতলের কোইন', 'কীলক', 'পিতলের কীলক', 'কয়েন', 'পিতলের কয়েন', 'মুদ্রা'],
+  },
+  {
+    englishKeys: ['rag paper', 'rag sheet', 'rag sheets', 'cream rag paper', 'damp rag paper', 'damp rag sheet'],
+    banglaVariants: [
+      'র্যাগ কাগজ',
+      'র্যাগ কাগজের শিট',
+      'র্যাগ শিট',
+      'তুলোট কাগজ',
+      'রাগ কাগজ',
+      'রাগ শিট',
+      'রাগ কাগজের শিট',
+    ],
+  },
+  {
+    englishKeys: ['roof-gutter', 'roof-gutters', 'roof gutter', 'roof gutters', 'blocked gutter', 'rain gutter'],
+    banglaVariants: [
+      'ছাদের জলনিকাশি নালা',
+      'জলনিকাশি নালা',
+      'বৃষ্টির জল নামার নালা',
+      'ছাদের নালা',
+      'কার্নিশ',
+      'ছাদের কার্নিশ',
+      'নর্দমা',
+    ],
+  },
+  {
+    englishKeys: ['tea-chest', 'tea-chests', 'tea chest', 'tea chests', 'chest', 'chests'],
+    banglaVariants: ['চায়ের বাক্স', 'চায়ের পেটি', 'কাঠের বাক্স', 'বাক্স', 'সিন্দুক'],
   },
 ];
 
@@ -463,12 +502,29 @@ function deduplicateBanglaList(
   items: unknown,
   excludeNormalized: ReadonlySet<string> = new Set()
 ): string[] {
-  if (!Array.isArray(items)) return [];
+  if (items === null || items === undefined) return [];
+
+  const rawEntries: string[] = [];
+  if (typeof items === 'string') {
+    if (!items.trim()) return [];
+    rawEntries.push(...items.split(','));
+  } else if (Array.isArray(items)) {
+    for (const raw of items) {
+      if (typeof raw !== 'string') continue;
+      if (raw.includes(',')) {
+        rawEntries.push(...raw.split(','));
+      } else {
+        rawEntries.push(raw);
+      }
+    }
+  } else {
+    return [];
+  }
+
   const seen = new Set<string>(excludeNormalized);
   const result: string[] = [];
 
-  for (const raw of items) {
-    if (typeof raw !== 'string') continue;
+  for (const raw of rawEntries) {
     const normalized = normalizeBanglaUnicode(raw);
     if (!normalized || seen.has(normalized)) continue;
     seen.add(normalized);
@@ -476,6 +532,24 @@ function deduplicateBanglaList(
   }
 
   return result;
+}
+
+/**
+ * Parses comma-separated string input (or an array of strings) for `acceptedAlternatives`
+ * or `avoidTranslations`:
+ * - Splits comma-separated input on `,`.
+ * - Trims leading and trailing whitespace and normalizes Unicode via `normalizeBanglaUnicode`
+ *   (preserving meaningful Bangla/English spelling and casing without rewriting or translating).
+ * - Removes empty entries.
+ * - Deduplicates entries consistently in order of first appearance (and excludes any entries in `excludeNormalized`).
+ * - Produces `[]` for empty, whitespace-only, `null`, or `undefined` input.
+ * - Pure and side-effect free: never mutates a supplied array.
+ */
+export function parseCommaSeparatedGlossaryList(
+  input: string | ReadonlyArray<string> | null | undefined,
+  excludeNormalized: ReadonlySet<string> = new Set()
+): string[] {
+  return deduplicateBanglaList(input, excludeNormalized);
 }
 
 /**
@@ -491,7 +565,12 @@ export function extractEnglishSurfaceAndSense(rawEnglishTerm: string): {
     return { surfaceTerm: '' };
   }
   const match = /^(.+?)\s*\(([^()]+)\)$/.exec(normalized);
-  if (match && match[1].trim().length > 0 && match[2].trim().length > 0) {
+  if (
+    match &&
+    match[1].trim().length > 0 &&
+    /[A-Za-z0-9]/.test(match[1]) &&
+    match[2].trim().length > 0
+  ) {
     return {
       surfaceTerm: match[1].trim(),
       parentheticalSense: match[2].trim(),
@@ -506,6 +585,89 @@ export function extractEnglishSurfaceAndSense(rawEnglishTerm: string): {
  */
 export function getEnglishSurfaceTerm(englishTerm: string): string {
   return extractEnglishSurfaceAndSense(englishTerm).surfaceTerm;
+}
+
+export interface SeparatedGlossaryRendering {
+  canonicalBangla: string;
+  explanatoryMeaning?: string;
+  isLiteralBracketedMotif: boolean;
+  isAmbiguousLegacyParenthetical: boolean;
+}
+
+/**
+ * Conservatively separates a canonical Bangla rendering from an embedded trailing
+ * explanatory parenthetical meaning (e.g., `"হ্যারো-টাইড (সর্বনাশা জোয়ার)"` ->
+ * `{ canonicalBangla: "হ্যারো-টাইড", explanatoryMeaning: "সর্বনাশা জোয়ার" }`):
+ * - Preserves literal bracketed/parenthetical motifs (such as `*(Fine.)*` -> `*(ঠিক আছে।)*`
+ *   or `(Not fine. Paid.)` -> `(ঠিক নেই। শোধ।)`) when the entire English term or Bangla
+ *   translation is a bracketed motif.
+ * - For non-bracketed terms, if `banglaTranslation` contains a single clean trailing parenthetical
+ *   `BaseTerm (ExplanatoryGloss)` where both `BaseTerm` and `ExplanatoryGloss` are non-empty and
+ *   contain no nested/unbalanced parentheses, separates `canonicalBangla` and `explanatoryMeaning`.
+ * - If `banglaTranslation` contains ambiguous, unbalanced, or multi-group parentheses that cannot
+ *   be safely split, preserves `banglaTranslation` unchanged and flags `isAmbiguousLegacyParenthetical: true`.
+ */
+export function separateCanonicalAndExplanatoryBangla(params: {
+  englishTerm: string;
+  banglaTranslation: string;
+  explanatoryMeaning?: string;
+  isLiteralBracketedMotif?: boolean;
+}): SeparatedGlossaryRendering {
+  const normEnglish = normalizeEnglishTerm(params.englishTerm ?? '');
+  const normBangla = normalizeBanglaUnicode(params.banglaTranslation ?? '');
+  const explicitExplanatory = normalizeBanglaUnicode(params.explanatoryMeaning ?? '');
+
+  const isEnglishBracketedMotif = /^\*?\([^()]+\)\*?$/.test(normEnglish);
+  const isBanglaWholeBracketedMotif = /^\*?\([^()]+\)\*?$/.test(normBangla);
+  const isBracketed = Boolean(
+    params.isLiteralBracketedMotif ||
+      isEnglishBracketedMotif ||
+      isBanglaWholeBracketedMotif
+  );
+
+  if (isBracketed) {
+    return {
+      canonicalBangla: normBangla,
+      ...(explicitExplanatory ? { explanatoryMeaning: explicitExplanatory } : {}),
+      isLiteralBracketedMotif: true,
+      isAmbiguousLegacyParenthetical: false,
+    };
+  }
+
+  if (!/[()]/.test(normBangla)) {
+    return {
+      canonicalBangla: normBangla,
+      ...(explicitExplanatory ? { explanatoryMeaning: explicitExplanatory } : {}),
+      isLiteralBracketedMotif: false,
+      isAmbiguousLegacyParenthetical: false,
+    };
+  }
+
+  const trailingMatch = /^([^()]+?)\s*\(([^()]+)\)$/.exec(normBangla);
+  if (trailingMatch) {
+    const baseCandidate = normalizeBanglaUnicode(trailingMatch[1]);
+    const innerGloss = normalizeBanglaUnicode(trailingMatch[2]);
+    if (baseCandidate && innerGloss) {
+      const mergedExplanatory = explicitExplanatory
+        ? explicitExplanatory.toLowerCase().includes(innerGloss.toLowerCase())
+          ? explicitExplanatory
+          : `${innerGloss}; ${explicitExplanatory}`
+        : innerGloss;
+      return {
+        canonicalBangla: baseCandidate,
+        explanatoryMeaning: mergedExplanatory,
+        isLiteralBracketedMotif: false,
+        isAmbiguousLegacyParenthetical: false,
+      };
+    }
+  }
+
+  return {
+    canonicalBangla: normBangla,
+    ...(explicitExplanatory ? { explanatoryMeaning: explicitExplanatory } : {}),
+    isLiteralBracketedMotif: false,
+    isAmbiguousLegacyParenthetical: true,
+  };
 }
 
 /**
@@ -592,6 +754,10 @@ export function normalizeTerminologyItem(
   const explicitContextMeaning =
     typeof raw.contextMeaning === 'string' ? raw.contextMeaning.trim() : '';
   const contextMeaningRaw = explicitContextMeaning || parentheticalSense || '';
+  const explanatoryMeaningRaw =
+    typeof raw.explanatoryMeaning === 'string'
+      ? normalizeBanglaUnicode(raw.explanatoryMeaning)
+      : '';
   const banglaStemRaw =
     typeof raw.banglaStem === 'string' ? normalizeBanglaUnicode(raw.banglaStem) : '';
 
@@ -602,6 +768,7 @@ export function normalizeTerminologyItem(
         : `term-${fallbackIndex}-${englishTerm.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'item'}`,
     englishTerm,
     banglaTranslation,
+    ...(explanatoryMeaningRaw ? { explanatoryMeaning: explanatoryMeaningRaw } : {}),
     acceptedAlternatives,
     avoidTranslations,
     category,
@@ -800,6 +967,7 @@ export function mergeSingleGlossaryPair(
     return normalizeTerminologyItem({
       ...current,
       banglaTranslation: primaryBangla,
+      explanatoryMeaning: current.explanatoryMeaning || candidate.explanatoryMeaning,
       acceptedAlternatives: mergedAccepted,
       avoidTranslations: mergedAvoid,
       contextMeaning: current.isContextSensitive
@@ -851,6 +1019,7 @@ export function mergeSingleGlossaryPair(
       ...candidate,
       id: current.id,
       banglaTranslation: primaryBangla,
+      explanatoryMeaning: candidate.explanatoryMeaning ?? current.explanatoryMeaning,
       acceptedAlternatives: mergedAccepted,
       avoidTranslations: mergedAvoid,
       contextMeaning: resolvedUserContextSensitive
@@ -907,6 +1076,9 @@ export function mergeSingleGlossaryPair(
   return normalizeTerminologyItem({
     ...current,
     banglaTranslation: primaryBangla,
+    explanatoryMeaning: stage1SupersedesChunkAi
+      ? candidate.explanatoryMeaning || current.explanatoryMeaning
+      : current.explanatoryMeaning || candidate.explanatoryMeaning,
     acceptedAlternatives: mergedAccepted,
     avoidTranslations: mergedAvoid,
     contextMeaning: nextIsContextSensitive
@@ -1011,20 +1183,124 @@ export function validateTerminologyItem(
   };
 }
 
+export type CreateUserGlossaryItemInput = Omit<
+  Partial<TerminologyMemoryItem>,
+  'source' | 'acceptedAlternatives' | 'avoidTranslations'
+> & {
+  englishTerm: string;
+  banglaTranslation: string;
+  acceptedAlternatives?: ReadonlyArray<string> | string | null;
+  avoidTranslations?: ReadonlyArray<string> | string | null;
+};
+
+export type UserGlossaryEditInput = Omit<
+  Partial<TerminologyMemoryItem>,
+  'acceptedAlternatives' | 'avoidTranslations'
+> & {
+  acceptedAlternatives?: ReadonlyArray<string> | string | null;
+  avoidTranslations?: ReadonlyArray<string> | string | null;
+};
+
+/**
+ * Pure helper for creating a user-owned glossary term:
+ * - Always stamps `source: 'user'` and `lockedByUser: true` so it is never treated
+ *   as an unlocked Stage 1 AI suggestion.
+ * - Parses comma-separated or array inputs for `acceptedAlternatives` and `avoidTranslations`.
+ * - Preserves all other valid `TerminologyMemoryItem` fields without mutating the input object or arrays.
+ */
+export function createUserGlossaryItem(
+  input: CreateUserGlossaryItemInput,
+  fallbackIndex = 0
+): TerminologyMemoryItem {
+  const acceptedAlternatives = parseCommaSeparatedGlossaryList(
+    input.acceptedAlternatives
+  );
+  const avoidTranslations = parseCommaSeparatedGlossaryList(
+    input.avoidTranslations
+  );
+
+  return normalizeTerminologyItem(
+    {
+      ...input,
+      acceptedAlternatives,
+      avoidTranslations,
+      source: 'user',
+      lockedByUser: true,
+    },
+    fallbackIndex
+  );
+}
+
+/**
+ * Pure helper for applying a user edit to an existing glossary term:
+ * - Promotes `source` to `'user'`.
+ * - Preserves `existing`'s current `lockedByUser` boolean value by default
+ *   (neither silently unlocking a locked term nor silently locking an unlocked term
+ *   merely because another field was edited).
+ * - Changes `lockedByUser` only when the caller explicitly supplies a boolean `lockedByUser` choice in `updates`.
+ * - Supports comma-separated string or array input for `acceptedAlternatives` and `avoidTranslations`.
+ * - Never mutates `existing` or `updates`.
+ */
+export function applyUserGlossaryEdit(
+  existing: TerminologyMemoryItem,
+  updates: UserGlossaryEditInput
+): TerminologyMemoryItem {
+  const currentLocked =
+    typeof existing.lockedByUser === 'boolean'
+      ? existing.lockedByUser
+      : existing.source === 'user';
+
+  const nextLocked =
+    typeof updates.lockedByUser === 'boolean'
+      ? updates.lockedByUser
+      : currentLocked;
+
+  const acceptedAlternatives =
+    updates.acceptedAlternatives !== undefined
+      ? parseCommaSeparatedGlossaryList(updates.acceptedAlternatives)
+      : parseCommaSeparatedGlossaryList(existing.acceptedAlternatives);
+
+  const avoidTranslations =
+    updates.avoidTranslations !== undefined
+      ? parseCommaSeparatedGlossaryList(updates.avoidTranslations)
+      : parseCommaSeparatedGlossaryList(existing.avoidTranslations);
+
+  return normalizeTerminologyItem({
+    ...existing,
+    ...updates,
+    acceptedAlternatives,
+    avoidTranslations,
+    source: 'user',
+    lockedByUser: nextLocked,
+  });
+}
+
+/**
+ * Alias for `applyUserGlossaryEdit` following existing naming conventions.
+ */
+export const updateUserGlossaryItem = applyUserGlossaryEdit;
+
 /**
  * Helper for creating a glossary item manually in the UI.
  * Automatically assigns `source: 'user'` and `lockedByUser: true` (unless explicitly overridden).
  */
 export function createUserTerminologyItem(
-  input: Omit<Partial<TerminologyMemoryItem>, 'source'> & {
-    englishTerm: string;
-    banglaTranslation: string;
-  }
+  input: CreateUserGlossaryItemInput
 ): TerminologyMemoryItem {
+  const acceptedAlternatives = parseCommaSeparatedGlossaryList(
+    input.acceptedAlternatives
+  );
+  const avoidTranslations = parseCommaSeparatedGlossaryList(
+    input.avoidTranslations
+  );
+
   return normalizeTerminologyItem({
     ...input,
+    acceptedAlternatives,
+    avoidTranslations,
     source: 'user',
-    lockedByUser: input.lockedByUser !== undefined ? input.lockedByUser : true,
+    lockedByUser:
+      typeof input.lockedByUser === 'boolean' ? input.lockedByUser : true,
   });
 }
 
@@ -1035,14 +1311,26 @@ export function createUserTerminologyItem(
  */
 export function updateUserTerminologyItem(
   existing: TerminologyMemoryItem,
-  updates: Partial<TerminologyMemoryItem>
+  updates: UserGlossaryEditInput
 ): TerminologyMemoryItem {
   const nextLocked =
     typeof updates.lockedByUser === 'boolean' ? updates.lockedByUser : true;
 
+  const acceptedAlternatives =
+    updates.acceptedAlternatives !== undefined
+      ? parseCommaSeparatedGlossaryList(updates.acceptedAlternatives)
+      : parseCommaSeparatedGlossaryList(existing.acceptedAlternatives);
+
+  const avoidTranslations =
+    updates.avoidTranslations !== undefined
+      ? parseCommaSeparatedGlossaryList(updates.avoidTranslations)
+      : parseCommaSeparatedGlossaryList(existing.avoidTranslations);
+
   return normalizeTerminologyItem({
     ...existing,
     ...updates,
+    acceptedAlternatives,
+    avoidTranslations,
     source: 'user',
     lockedByUser: nextLocked,
   });
@@ -1169,7 +1457,17 @@ export function findEnglishTermOccurrences(
   const term = getEnglishSurfaceTerm(item.englishTerm);
   if (!englishText || !term) return [];
 
-  const tokens = term.split(/[\s-]+/).filter(Boolean);
+  // Unwrap optional outer Markdown italics (*...*) so bracketed or italicized recurring expressions
+  // like "*(Fine.)*" or "(Fine.)" match both "*(Fine.)*" and "(Fine.)" in prose without false-matching
+  // unbracketed words.
+  const outerAsteriskMatch = /^\*+(.+?)\*+$/.exec(term);
+  const coreTerm = outerAsteriskMatch ? outerAsteriskMatch[1].trim() : term;
+  if (!coreTerm) return [];
+
+  const isParenthesizedMotif = /^\(.+\)$/.test(coreTerm);
+  const allowOptionalOuterAsterisks = Boolean(outerAsteriskMatch || isParenthesizedMotif);
+
+  const tokens = coreTerm.split(/[\s-]+/).filter(Boolean);
   if (tokens.length === 0) return [];
 
   const headWord = tokens[tokens.length - 1];
@@ -1187,7 +1485,10 @@ export function findEnglishTermOccurrences(
           .join('[\\s\\-]+')}[\\s\\-]+`
       : '';
 
-  const fullPattern = `${prefixPattern}(?:${headForms.join('|')})`;
+  const corePattern = `${prefixPattern}(?:${headForms.join('|')})`;
+  const fullPattern = allowOptionalOuterAsterisks
+    ? `(?:\\*+)?${corePattern}(?:\\*+)?`
+    : corePattern;
   const flags = item.caseSensitive ? 'g' : 'gi';
   const regex = new RegExp(fullPattern, flags);
 
@@ -1402,16 +1703,37 @@ export function findBanglaTermOccurrences(
     if (normStem) candidateBases.add(normStem);
   }
 
+  // If the Bangla term is wrapped in formatting/punctuation (such as "*(ঠিক আছে।)*" or "(ঠিক আছে।)"),
+  // also add the unwrapped core Bangla phrase so matches succeed whether or not outer punctuation/italics
+  // are attached to the token.
+  const unwrappedBangla = normTerm
+    .replace(/^[\s*()\[\]"'‘’“”।.!?]+|[\s*()\[\]"'‘’“”।.!?]+$/g, '')
+    .trim();
+  if (unwrappedBangla && /[\u0980-\u09FF]/.test(unwrappedBangla)) {
+    candidateBases.add(unwrappedBangla);
+  }
+
   const spans: BanglaTermMatchSpan[] = [];
 
   for (const base of candidateBases) {
     const words = base.split(/[\s-]+/).filter(Boolean);
     if (words.length === 0) continue;
 
-    // Build regex for the base phrase (allowing space, hyphen, or compound join on 2+ char words)
+    // Build regex for the base phrase (allowing space, hyphen, or compound join on 2+ char words,
+    // and allowing internal sentence punctuation like । or , in multi-clause expressions to vary flexibly)
     const joiner =
       words.length > 1 && words.every((w) => w.length >= 2) ? '[\\s\\-]*' : '[\\s\\-]+';
-    const basePattern = words.map(escapeRegExp).join(joiner);
+    const basePattern = words
+      .map((w, idx) => {
+        if (idx < words.length - 1 && /[।.,!?]+$/.test(w)) {
+          const stemPart = w.replace(/[।.,!?]+$/, '');
+          if (stemPart) {
+            return `${escapeRegExp(stemPart)}[।.,!?]*`;
+          }
+        }
+        return escapeRegExp(w);
+      })
+      .join(joiner);
     const headWord = words[words.length - 1];
 
     const regex = new RegExp(basePattern, 'g');
@@ -1525,7 +1847,12 @@ export function filterGlossaryForChunk(
   const supplementalCandidates = normalizedGlossary.filter((item) => {
     if (matchedIds.has(item.id)) return false;
     if (includeLocked && item.lockedByUser) return true;
-    if (includeNamesAndPlaces && (item.category === 'name' || item.category === 'place')) {
+    if (
+      includeNamesAndPlaces &&
+      (item.category === 'name' ||
+        item.category === 'place' ||
+        item.category === 'expression')
+    ) {
       return true;
     }
     return false;
@@ -1979,6 +2306,56 @@ export function lintParagraphTerminology(
         remainingNeeded -= toClaim.length;
       }
     }
+
+    // For recurring expressions (`category === 'expression'`), if an English occurrence is immediately
+    // preceded by a negation modifier (e.g., "Not fine" varying a locked "Fine" -> "ঠিক আছে" motif),
+    // allow the corresponding negated Bangla echo sharing the same core root (e.g., "ঠিক নেই" / "ঠিক নয়")
+    // so context-sensitive variations preserve the motif relationship without forcing affirmative wording.
+    if (remainingNeeded > 0 && item.category === 'expression') {
+      const englishSurface = getEnglishSurfaceTerm(item.englishTerm);
+      const isAlreadyNegatedInTerm = /^\*?\(?\s*(?:not|never|no\b)/i.test(englishSurface);
+      const negatedOccurrencesCount = isAlreadyNegatedInTerm
+        ? 0
+        : entry.occurrences.filter((occ) => {
+            const prefixWindow = englishText.slice(Math.max(0, occ.start - 24), occ.start);
+            return /\b(?:not|never|no\s+longer|hardly|scarcely)\s+$/i.test(prefixWindow);
+          }).length;
+
+      if (negatedOccurrencesCount > 0) {
+        const negatedEchoCandidates = new Set<string>();
+        for (const baseSource of [expectedBangla, ...acceptedAlternatives]) {
+          const core = normalizeBanglaUnicode(baseSource)
+            .replace(/^[\s*()\[\]"'‘’“”।.!?]+|[\s*()\[\]"'‘’“”।.!?]+$/g, '')
+            .trim();
+          if (!core) continue;
+          const strippedAffirmative = core
+            .replace(/\s+(?:আছে|রয়েছে|হয়েছে|হলো|বটে)$/u, '')
+            .trim();
+          const root = strippedAffirmative || core;
+          if (root && /[\u0980-\u09FF]/.test(root)) {
+            for (const negWord of ['নেই', 'নয়', 'না', 'নি']) {
+              negatedEchoCandidates.add(`${root} ${negWord}`);
+            }
+          }
+        }
+
+        let negQuota = Math.min(remainingNeeded, negatedOccurrencesCount);
+        for (const negForm of negatedEchoCandidates) {
+          if (negQuota <= 0) break;
+          const spans = findBanglaTermOccurrences(banglaText, negForm, {
+            allowInflections: false,
+          }).filter((s) => !consumedBanglaSpans.some((c) => spansOverlap(s, c)));
+          const toClaim = spans.slice(0, negQuota);
+          for (const s of toClaim) {
+            acceptedSpans.push(s);
+            consumedBanglaSpans.push({ start: s.start, end: s.end });
+          }
+          negQuota -= toClaim.length;
+          remainingNeeded -= toClaim.length;
+        }
+      }
+    }
+
     entry.acceptedSpans = acceptedSpans;
   };
 
@@ -2904,15 +3281,39 @@ export function syncLocationsToGlossary(
 
   const incomingPlaceItems: Array<Partial<TerminologyMemoryItem>> = locations
     .filter((loc) => loc && typeof loc.name === 'string' && typeof loc.banglaName === 'string')
-    .map((loc, idx) => ({
-      id: `loc-sync-${idx}-${normalizeEnglishTerm(loc.name).toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'place'}`,
-      englishTerm: loc.name,
-      banglaTranslation: loc.banglaName,
-      category: 'place' as TerminologyCategory,
-      notes: loc.description?.trim() || 'Synced from Story Context locations',
-      source: 'location_sync' as TerminologySource,
-      lockedByUser: false,
-    }));
+    .map((loc, idx) => {
+      const { surfaceTerm, parentheticalSense } = extractEnglishSurfaceAndSense(loc.name);
+      const cleanEnglishName = surfaceTerm || normalizeEnglishTerm(loc.name);
+      const separated = separateCanonicalAndExplanatoryBangla({
+        englishTerm: cleanEnglishName,
+        banglaTranslation: loc.banglaName,
+      });
+      const isPairedAlias = Boolean(parentheticalSense && separated.explanatoryMeaning);
+      const noteParts = [
+        ...(isPairedAlias
+          ? [
+              `Also called "${parentheticalSense}" -> "${separated.explanatoryMeaning}" (alternative name for this same location; use "${separated.explanatoryMeaning}" when the source text refers to "${parentheticalSense}", and never combine them in parentheses as "${separated.canonicalBangla} (${separated.explanatoryMeaning})" in prose)`,
+            ]
+          : parentheticalSense
+            ? [`Also referred to as: ${parentheticalSense}`]
+            : []),
+        ...(loc.description?.trim() ? [loc.description.trim()] : []),
+      ];
+      return {
+        id: `loc-sync-${idx}-${cleanEnglishName.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'place'}`,
+        englishTerm: cleanEnglishName,
+        banglaTranslation: separated.canonicalBangla,
+        ...(!isPairedAlias && separated.explanatoryMeaning
+          ? { explanatoryMeaning: separated.explanatoryMeaning }
+          : {}),
+        category: 'place' as TerminologyCategory,
+        notes: noteParts.join('; ') || 'Synced from Story Context locations',
+        contextMeaning: undefined,
+        isContextSensitive: false,
+        source: 'location_sync' as TerminologySource,
+        lockedByUser: false,
+      };
+    });
 
   return mergeGlossaryItems(existingGlossary, incomingPlaceItems, {
     defaultSource: 'location_sync',
@@ -3281,19 +3682,41 @@ export function mergeStage1WindowResults(params: {
     banglaName?: string;
     description?: string;
   }) => {
-    const name = normalizeEnglishTerm(loc?.name ?? '');
-    const banglaName = normalizeBanglaUnicode(loc?.banglaName ?? '');
-    if (!name || !banglaName) return;
+    const rawName = normalizeEnglishTerm(loc?.name ?? '');
+    const rawBanglaName = normalizeBanglaUnicode(loc?.banglaName ?? '');
+    if (!rawName || !rawBanglaName) return;
+    const { surfaceTerm, parentheticalSense } = extractEnglishSurfaceAndSense(rawName);
+    const name = surfaceTerm || rawName;
+    const separated = separateCanonicalAndExplanatoryBangla({
+      englishTerm: name,
+      banglaTranslation: rawBanglaName,
+    });
+    const banglaName = separated.canonicalBangla || rawBanglaName;
+    const isPairedAlias = Boolean(parentheticalSense && separated.explanatoryMeaning);
+    const descParts = [
+      ...(isPairedAlias
+        ? [
+            `Also called "${parentheticalSense}" -> "${separated.explanatoryMeaning}" (alternative name for this same location)`,
+          ]
+        : [
+            ...(parentheticalSense ? [`Also referred to as: ${parentheticalSense}`] : []),
+            ...(separated.explanatoryMeaning
+              ? [`Explanatory meaning: ${separated.explanatoryMeaning}`]
+              : []),
+          ]),
+      ...((loc?.description ?? '').trim() ? [(loc?.description ?? '').trim()] : []),
+    ];
+    const combinedDesc = descParts.join('; ');
     const key = name.toLowerCase();
     const existingLoc = locationMap.get(key);
     if (!existingLoc) {
       locationMap.set(key, {
         name,
         banglaName,
-        description: (loc?.description ?? '').trim(),
+        description: combinedDesc,
       });
-    } else if (!existingLoc.description && loc?.description?.trim()) {
-      existingLoc.description = loc.description.trim();
+    } else if (!existingLoc.description && combinedDesc) {
+      existingLoc.description = combinedDesc;
     }
   };
 
@@ -3412,6 +3835,63 @@ export function formatGlossaryForPrompt(
   }
 
   const formatEntryLine = (item: TerminologyMemoryItem): string => {
+    if (stage === 'stage3') {
+      const separated = separateCanonicalAndExplanatoryBangla({
+        englishTerm: item.englishTerm,
+        banglaTranslation: item.banglaTranslation,
+        explanatoryMeaning: item.explanatoryMeaning,
+      });
+      const { surfaceTerm: cleanSurface, parentheticalSense } =
+        extractEnglishSurfaceAndSense(item.englishTerm);
+      const isPairedLegacyAlias = Boolean(
+        !separated.isLiteralBracketedMotif &&
+          parentheticalSense &&
+          separated.explanatoryMeaning &&
+          !item.explanatoryMeaning
+      );
+      const displayEnglish = isPairedLegacyAlias
+        ? cleanSurface || item.englishTerm
+        : item.englishTerm;
+      const banglaLabel = separated.isAmbiguousLegacyParenthetical
+        ? `Legacy Unsplit Bangla (CONTAINS PARENTHETICAL NOTES — DO NOT COPY VERBATIM INTO PROSE): "${separated.canonicalBangla}"`
+        : `Preferred Bangla: "${separated.canonicalBangla}"`;
+      const parts: string[] = [
+        `- "${displayEnglish}" (${item.category}${item.caseSensitive ? ', case-sensitive' : ''}) -> ${banglaLabel}`,
+      ];
+      if (item.acceptedAlternatives && item.acceptedAlternatives.length > 0) {
+        parts.push(`Accepted Alternatives: [${item.acceptedAlternatives.map((a) => `"${a}"`).join(', ')}]`);
+      }
+      if (item.avoidTranslations && item.avoidTranslations.length > 0) {
+        parts.push(`FORBIDDEN / AVOID: [${item.avoidTranslations.map((a) => `"${a}"`).join(', ')}]`);
+      }
+      if (isPairedLegacyAlias) {
+        parts.push(
+          `Paired Source Alias (alternative name for this same entity when the source uses "${parentheticalSense}"): "${parentheticalSense}" -> "${separated.explanatoryMeaning}" (never combine in parentheses as "${separated.canonicalBangla} (${separated.explanatoryMeaning})" in prose)`
+        );
+      } else if (separated.explanatoryMeaning) {
+        parts.push(
+          `Explanatory Meaning (Translator Reference Only — DO NOT insert in parentheses into story prose): "${separated.explanatoryMeaning}"`
+        );
+      }
+      if (item.contextMeaning && !isPairedLegacyAlias) {
+        parts.push(`Context Sense: ${item.contextMeaning}`);
+      }
+      if (item.notes) {
+        parts.push(
+          `Contextual Guidance (Translator Reference Only — DO NOT copy into story prose): ${item.notes}`
+        );
+      }
+      if (separated.isAmbiguousLegacyParenthetical) {
+        parts.push(
+          `[Ambiguous Legacy Entry: use only the core canonical Bangla term in story prose; NEVER copy translator notes or parenthetical glosses into the narrative]`
+        );
+      }
+      if (item.isContextSensitive && !isPairedLegacyAlias) {
+        parts.push(`[Context-Sensitive Polysemous Term: apply only when this sense fits]`);
+      }
+      return parts.join(' | ');
+    }
+
     const parts: string[] = [
       `- "${item.englishTerm}" (${item.category}${item.caseSensitive ? ', case-sensitive' : ''}) -> Preferred Bangla: "${item.banglaTranslation}"`,
     ];
@@ -3461,15 +3941,30 @@ export function formatGlossaryForPrompt(
     );
   }
 
+  if (stage === 'stage3') {
+    sections.push(
+      [
+        '[STAGE 3 TERMINOLOGY & CONTEXTUAL APPLICATION RULES]',
+        '1. User-Locked Terms (Tier 1): Strictly use the Preferred Bangla (or listed Accepted Alternatives) whenever the source concept appears. Never use any FORBIDDEN / AVOID translation.',
+        '2. Established & Provisional Terms (Tier 2 & Tier 3): Maintain consistent Bangla terminology across all paragraphs and chunks.',
+        '3. Proper Names & Named Landmarks: Keep named vessels, bells, paths, and landmarks (when listed as proper names in the glossary) as distinct proper names rather than translating them into generic common nouns.',
+        '4. Recurring Expressions & Bracketed Motifs (category: "expression"): Preserve the intended recurring meaning, bracketed/italicized formatting, and verbal relationship between appearances (for example, if `*(Fine.)*` is rendered as `*(ঠিক আছে।)*`, then a later variation such as `*(Not fine. Paid.)*` must echo the same core Bangla root as `*(ঠিক নেই। শোধ হলো।)*` / `*(ঠিক নেই। শোধ।)*`). Allow context-sensitive variation when the original meaning genuinely changes—never force identical Bangla wording where doing so would distort the source.',
+        '5. Contextual Sense & Natural Grammar: Apply glossary terms according to their contextual meaning in the sentence (do not force a glossary term into an unrelated idiom or sense), and attach natural Bangla grammatical suffixes/case endings (-টি, -টা, -গুলো, -ে, -ের, -তে, -য়, -কে) where syntax requires.',
+        '6. Strict Separation of Canonical Terms vs. Translator-Facing Explanations: Use ONLY the Preferred Bangla canonical term in translated story prose and dialogue. Explanatory Meanings and Contextual Guidance are provided strictly for translator comprehension and worldbuilding accuracy—NEVER insert explanatory glosses in parentheses (such as "হ্যারো-টাইড (সর্বনাশা জোয়ার)") or append dictionary definitions into the story text unless the original English source sentence itself contains parentheses.',
+      ].join('\n')
+    );
+  }
+
   if (stage === 'stage4') {
     sections.push(
       [
         '[STAGE 4 TERMINOLOGY PROTECTION & LITERARY POLISH RULES]',
         '1. User-Locked Terms (Tier 1): Strictly preserve the Preferred Bangla (or listed Accepted Alternatives). Never omit when the literal concept is present and never introduce any FORBIDDEN / AVOID rendering.',
         '2. Established & Provisional AI Terms (Tier 2 & Tier 3): Do not replace established Bangla terms with unlisted synonyms merely for stylistic variety.',
-        '3. Accepted Alternatives: You may keep or switch between the Preferred Bangla and explicitly listed Accepted Alternatives when rhythm or euphony benefits.',
-        '4. Natural Bangla Grammatical Inflections (ALLOWED): You may freely attach or adjust natural Bangla nominal suffixes, classifiers, plurals, and case endings (-টি, -টা, -গুলো, -গুলি, -ে, -ের, -তে, -য়, -কে, -দের) on the protected Bangla root so sentence syntax flows naturally.',
-        '5. Contextual Paraphrasing & Pronoun Cohesion (ALLOWED): When an unlocked descriptive noun repeats across adjacent clauses where natural literary Bangla uses a pronoun (সেটি, সেখানে, তার), or when a polysemous term is used in a different sense (e.g. a "school of fish" vs an educational institution), follow natural literary Bangla without introducing any FORBIDDEN / AVOID term.',
+        '3. Recurring Expressions & Developing Motifs (category: "expression"): Preserve the recurring Bangla expression and its core root across related or developing appearances (e.g., `*(Fine.)*` → `*(ঠিক আছে।)*` and its negated callback `*(Not fine. Paid.)*` → `*(ঠিক নেই। শোধ হলো।)*` / `*(ঠিক নেই। পরিশোধিত।)*`), while respecting genuine shifts in source meaning and preserving surrounding `*...*` italics.',
+        '4. Accepted Alternatives: You may keep or switch between the Preferred Bangla and explicitly listed Accepted Alternatives when rhythm or euphony benefits.',
+        '5. Natural Bangla Grammatical Inflections (ALLOWED): You may freely attach or adjust natural Bangla nominal suffixes, classifiers, plurals, and case endings (-টি, -টা, -গুলো, -গুলি, -ে, -ের, -তে, -য়, -কে, -দের) on the protected Bangla root so sentence syntax flows naturally.',
+        '6. Contextual Paraphrasing & Pronoun Cohesion (ALLOWED): When an unlocked descriptive noun repeats across adjacent clauses where natural literary Bangla uses a pronoun (সেটি, সেখানে, তার), or when a polysemous term is used in a different sense (e.g. a "school of fish" vs an educational institution), follow natural literary Bangla without introducing any FORBIDDEN / AVOID term.',
       ].join('\n')
     );
   }
@@ -3480,7 +3975,7 @@ export function formatGlossaryForPrompt(
         '[STAGE 5 TERMINOLOGY AUDIT RULES]',
         '1. Preferred & Accepted Forms (VALID): Do NOT flag a terminology issue when the Bangla translation uses either the Preferred Bangla or any listed Accepted Alternatives, including with natural Bangla grammatical suffixes, classifiers, plurals, and case endings (-টি, -টা, -গুলো, -গুলি, -ে, -ের, -তে, -য়, -কে, -দের).',
         '2. Forbidden / Avoid Terms & Tier 1 Locks (STRICT): ALWAYS flag a terminology issue if any FORBIDDEN / AVOID translation is used, or if a Tier 1 (User-Locked) term is omitted or replaced with an unapproved synonym when its literal English concept is present.',
-        '3. Context-Sensitive Polysemous Terms: For entries marked [Context-Sensitive Polysemous Term], verify that the English passage uses the term in the specified Context Sense before flagging a terminology mismatch.',
+        '3. Context-Sensitive Polysemous Terms & Recurring Motifs: For entries marked [Context-Sensitive Polysemous Term] or `expression`, verify that the English passage uses the term in the specified sense before flagging a mismatch, and allow context-sensitive variations (such as `*(Not fine. Paid.)*` echoing `*(Fine.)*` via `*(ঠিক নেই। ...)*`) when the source meaning genuinely shifts.',
       ].join('\n')
     );
   }
@@ -3488,11 +3983,137 @@ export function formatGlossaryForPrompt(
   return sections.join('\n\n');
 }
 
+export const VALID_STAGE5_ISSUE_TYPES: ReadonlySet<VerificationIssueType> =
+  new Set<VerificationIssueType>([
+    'missing_content',
+    'omitted_dialogue',
+    'added_info',
+    'changed_meaning',
+    'character_reference',
+    'terminology',
+    'emotional_intent',
+    'chronology',
+  ]);
+
+const STAGE5_ISSUE_TYPE_ALIASES: Readonly<Record<string, VerificationIssueType>> = {
+  omission: 'missing_content',
+  missing_clause: 'missing_content',
+  missing_detail: 'missing_content',
+  missing_number: 'missing_content',
+  incomplete_translation: 'missing_content',
+  dialogue_omission: 'omitted_dialogue',
+  lost_dialogue: 'omitted_dialogue',
+  dialogue_voice: 'changed_meaning',
+  unsupported_addition: 'added_info',
+  hallucination: 'added_info',
+  invented_detail: 'added_info',
+  context_contamination: 'added_info',
+  factual_error: 'changed_meaning',
+  factual_fidelity: 'changed_meaning',
+  entity_fidelity: 'changed_meaning',
+  object_substitution: 'changed_meaning',
+  physical_action: 'changed_meaning',
+  spatial_relationship: 'changed_meaning',
+  spatial_relation: 'changed_meaning',
+  sensory_imagery: 'changed_meaning',
+  environmental_imagery: 'changed_meaning',
+  polysemy: 'changed_meaning',
+  contextual_polysemy: 'changed_meaning',
+  idiom_distortion: 'changed_meaning',
+  mistranslation: 'changed_meaning',
+  numerical_mismatch: 'changed_meaning',
+  pronoun_inconsistency: 'character_reference',
+  honorific_mismatch: 'character_reference',
+  speaker_attribution: 'character_reference',
+  glossary_mismatch: 'terminology',
+  term_inconsistency: 'terminology',
+  metaphor_imagery: 'emotional_intent',
+  tone_shift: 'emotional_intent',
+  literary_nuance: 'emotional_intent',
+  tense_aspect: 'chronology',
+  tense_mismatch: 'chronology',
+  negation_error: 'chronology',
+  timeline_error: 'chronology',
+};
+
+/**
+ * Safely normalizes a Stage 5 issue category string into one of the 8 canonical
+ * `VerificationIssueType` values, mapping known rubric aliases and defaulting
+ * unknown values conservatively to `'changed_meaning'`.
+ */
+export function normalizeStage5IssueType(
+  rawType: unknown
+): VerificationIssueType {
+  if (typeof rawType !== 'string') {
+    return 'changed_meaning';
+  }
+  const normalized = rawType
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+  if (VALID_STAGE5_ISSUE_TYPES.has(normalized as VerificationIssueType)) {
+    return normalized as VerificationIssueType;
+  }
+  return STAGE5_ISSUE_TYPE_ALIASES[normalized] ?? 'changed_meaning';
+}
+
+/**
+ * Safely normalizes a Stage 5 issue severity value into `'high' | 'medium' | 'low'`.
+ */
+export function normalizeStage5IssueSeverity(
+  rawSeverity: unknown
+): 'high' | 'medium' | 'low' {
+  if (typeof rawSeverity !== 'string') {
+    return 'medium';
+  }
+  const norm = rawSeverity.trim().toLowerCase();
+  if (norm === 'high' || norm === 'critical' || norm === 'severe' || norm === 'critical_error') {
+    return 'high';
+  }
+  if (norm === 'low' || norm === 'minor' || norm === 'suggestion') {
+    return 'low';
+  }
+  if (norm === 'medium' || norm === 'moderate' || norm === 'major') {
+    return 'medium';
+  }
+  return 'medium';
+}
+
+/**
+ * Computes the deterministic point penalty for a single unresolved `VerificationIssue` or severity level:
+ * - `'high'` (critical factual error, object/entity/number substitution, omitted clause/dialogue): 8 points
+ * - `'medium'` (major meaning/nuance shift, register/aspect distortion): 4 points
+ * - `'low'` (minor fidelity note or stylistic suggestion): 1 point
+ */
+export function getVerificationIssueScorePenalty(
+  issueOrSeverity:
+    | Pick<VerificationIssue, 'severity' | 'resolved'>
+    | 'high'
+    | 'medium'
+    | 'low'
+): number {
+  if (typeof issueOrSeverity === 'string') {
+    if (issueOrSeverity === 'high') return 8;
+    if (issueOrSeverity === 'medium') return 4;
+    return 1;
+  }
+  if (issueOrSeverity.resolved) return 0;
+  if (issueOrSeverity.severity === 'high') return 8;
+  if (issueOrSeverity.severity === 'medium') return 4;
+  return 1;
+}
+
 export interface MergeVerificationReportParams {
   aiReport?: VerificationReport | null;
   lintResult: ChapterTerminologyLintResult;
+  numericalLintResult?: ChapterNumericalLintResult;
   paragraphs: ReadonlyArray<ParagraphPair>;
   previousReport?: VerificationReport | null;
+  /**
+   * Optional pre-edit unresolved penalty sum from the report prior to invalidating edited-paragraph issues,
+   * used during `local_relint` so correcting a flagged paragraph restores its deducted score.
+   */
+  priorUnresolvedPenaltyOverride?: number;
   /**
    * - `'stage5_full'`: Combining a fresh AI Stage 5 VerificationReport with deterministic terminology lint.
    * - `'local_relint'`: Updating deterministic terminology findings after a local paragraph/glossary edit
@@ -3504,13 +4125,14 @@ export interface MergeVerificationReportParams {
 
 /**
  * Combines AI-generated Stage 5 literary QA findings with deterministic `ChapterTerminologyLintResult`
- * while strictly separating reconciliation of AI issues vs. deterministic terminology findings:
+ * and deterministic `ChapterNumericalLintResult` while strictly separating reconciliation of AI issues
+ * vs. deterministic findings:
  * 1. Converts deterministic findings to 0-based `paragraphIndex` (`finding.paragraphIndex`) to match Stage 5 UI.
- * 2. Leaves `suggestedFix: undefined` on all deterministic terminology issues (embedding remediation guidance in `description`).
+ * 2. Leaves `suggestedFix: undefined` on all deterministic issues (embedding remediation guidance in `description`).
  * 3. Reconciles `resolved: true` state on deterministic findings ONLY against previous `source === 'deterministic_lint'`
  *    issues whose `paragraphIndex`, `paragraphContentFingerprint`, AND `findingSignature` all match.
  * 4. Never allows a deterministic fingerprint match to alter or preserve the resolved state of an AI-generated issue.
- * 5. Preserves missing-paragraph completion gates (`missingTranslation: true` -> `isComplete: false`).
+ * 5. Preserves missing-paragraph and unresolved high-severity completion gates.
  */
 export function mergeVerificationReportWithTerminologyLint(
   params: MergeVerificationReportParams
@@ -3518,11 +4140,16 @@ export function mergeVerificationReportWithTerminologyLint(
   const {
     aiReport = null,
     lintResult,
+    numericalLintResult: providedNumericalLint,
     paragraphs,
     previousReport = null,
+    priorUnresolvedPenaltyOverride,
     mode = aiReport ? 'stage5_full' : 'local_relint',
     checkedAt = aiReport?.checkedAt ?? new Date().toISOString(),
   } = params;
+
+  const numericalLintResult =
+    providedNumericalLint ?? lintChapterNumericalConsistency(paragraphs);
 
   const paragraphByIndex = new Map<number, ParagraphPair>();
   for (const p of paragraphs) {
@@ -3537,8 +4164,8 @@ export function mergeVerificationReportWithTerminologyLint(
     (iss) => iss.source !== 'deterministic_lint'
   );
 
-  // Build deterministic VerificationIssues with 0-based paragraphIndex and fingerprint reconciliation
-  const reconciledDeterministicIssues: VerificationIssue[] = lintResult.findings.map(
+  // Build deterministic glossary VerificationIssues with 0-based paragraphIndex and fingerprint reconciliation
+  const reconciledGlossaryIssues: VerificationIssue[] = lintResult.findings.map(
     (finding) => {
       const para = paragraphByIndex.get(finding.paragraphIndex);
       const paragraphContentFingerprint = para
@@ -3585,6 +4212,39 @@ export function mergeVerificationReportWithTerminologyLint(
     }
   );
 
+  // Build deterministic numerical VerificationIssues (only for confirmed mismatches)
+  const reconciledNumericalIssues: VerificationIssue[] =
+    numericalLintResult.confirmedMismatches.map((finding) => {
+      const para = paragraphByIndex.get(finding.paragraphIndex);
+      const paragraphContentFingerprint = para
+        ? computeParagraphContentFingerprint(para.englishText, para.banglaText)
+        : '';
+      const findingSignature = finding.findingSignature;
+
+      const matchingPreviousDet = previousDeterministicIssues.find(
+        (prev) =>
+          prev.source === 'deterministic_lint' &&
+          prev.paragraphIndex === finding.paragraphIndex &&
+          Boolean(paragraphContentFingerprint) &&
+          prev.paragraphContentFingerprint === paragraphContentFingerprint &&
+          prev.findingSignature === findingSignature
+      );
+
+      const baseIssue = numericalFindingToVerificationIssue(finding);
+      return {
+        ...baseIssue,
+        id: matchingPreviousDet?.id ?? baseIssue.id,
+        resolved: matchingPreviousDet ? Boolean(matchingPreviousDet.resolved) : false,
+        paragraphContentFingerprint,
+        findingSignature,
+      };
+    });
+
+  const reconciledDeterministicIssues: VerificationIssue[] = [
+    ...reconciledGlossaryIssues,
+    ...reconciledNumericalIssues,
+  ];
+
   // Determine which AI issues to keep based on `mode`
   const rawAiSourceIssues: VerificationIssue[] =
     mode === 'stage5_full' && aiReport
@@ -3593,7 +4253,7 @@ export function mergeVerificationReportWithTerminologyLint(
 
   // Normalize AI issues with `source: 'ai_stage5'` while enforcing strict `paragraphIndex` and `suggestedFix` validation,
   // stamping `paragraphContentFingerprint`, conservatively preserving `resolved: true` on unchanged paragraphs,
-  // and deduplicating any AI `terminology` issue that overlaps with a deterministic finding on the same paragraph & term.
+  // and deduplicating any AI `terminology` or numerical `changed_meaning` issue that overlaps with a deterministic finding.
   const computeStrictAiFindingSignature = (
     iss: Pick<
       VerificationIssue,
@@ -3616,6 +4276,7 @@ export function mergeVerificationReportWithTerminologyLint(
   };
 
   const survivingAiIssues: VerificationIssue[] = [];
+  let deduplicatedAiPenalty = 0;
   for (const aiIss of rawAiSourceIssues) {
     if (!aiIss || typeof aiIss !== 'object') {
       continue;
@@ -3623,6 +4284,17 @@ export function mergeVerificationReportWithTerminologyLint(
     if (aiIss.source === 'deterministic_lint') {
       continue;
     }
+
+    // Reject issues with missing or whitespace-only explanation (`description`)
+    if (
+      typeof aiIss.description !== 'string' ||
+      aiIss.description.trim().length === 0
+    ) {
+      continue;
+    }
+
+    const normalizedType = normalizeStage5IssueType(aiIss.type);
+    const normalizedSeverity = normalizeStage5IssueSeverity(aiIss.severity);
 
     // Strict paragraphIndex validation:
     // - Missing or null (`undefined` | `null`): legitimate chapter-level issue (`paragraphIndex: undefined`, `suggestedFix: undefined`)
@@ -3647,23 +4319,78 @@ export function mergeVerificationReportWithTerminologyLint(
       continue;
     }
 
-    if (aiIss.type === 'terminology' && validParagraphIndex !== undefined) {
+    if (
+      (normalizedType === 'terminology' ||
+        normalizedType === 'changed_meaning' ||
+        normalizedType === 'character_reference') &&
+      validParagraphIndex !== undefined
+    ) {
       const overlapsDeterministic = lintResult.findings.some((f) => {
         if (f.paragraphIndex !== validParagraphIndex) return false;
         const surfaceLower = getEnglishSurfaceTerm(f.englishTerm).toLowerCase();
         const descLower = (aiIss.description ?? '').toLowerCase();
         const enExcerptLower = (aiIss.englishExcerpt ?? '').toLowerCase();
-        return (
-          descLower.includes(surfaceLower) ||
-          enExcerptLower.includes(surfaceLower) ||
-          (f.expectedBangla && (aiIss.description ?? '').includes(f.expectedBangla)) ||
-          (f.detectedBanglaVariant &&
-            ((aiIss.description ?? '').includes(f.detectedBanglaVariant) ||
-              (aiIss.banglaExcerpt ?? '').includes(f.detectedBanglaVariant)))
-        );
+        const mentionsEn =
+          descLower.includes(surfaceLower) || enExcerptLower.includes(surfaceLower);
+        const mentionsBn =
+          Boolean(f.expectedBangla && (aiIss.description ?? '').includes(f.expectedBangla)) ||
+          Boolean(
+            f.detectedBanglaVariant &&
+              ((aiIss.description ?? '').includes(f.detectedBanglaVariant) ||
+                (aiIss.banglaExcerpt ?? '').includes(f.detectedBanglaVariant))
+          );
+        return normalizedType === 'terminology'
+          ? mentionsEn || mentionsBn
+          : mentionsEn && mentionsBn;
       });
 
       if (overlapsDeterministic) {
+        if (!aiIss.resolved) {
+          deduplicatedAiPenalty += getVerificationIssueScorePenalty(normalizedSeverity);
+        }
+        continue;
+      }
+    }
+
+    if (
+      (normalizedType === 'changed_meaning' ||
+        normalizedType === 'missing_content' ||
+        normalizedType === 'added_info') &&
+      validParagraphIndex !== undefined
+    ) {
+      const overlapsNumerical = numericalLintResult.confirmedMismatches.some((nf) => {
+        if (nf.paragraphIndex !== validParagraphIndex) return false;
+        const matchedEnLower = nf.matchedEnglishText.toLowerCase();
+        const numberOnlyLower = nf.matchedEnglishText
+          .toLowerCase()
+          .replace(/^(?:number|no\.?|aged?)\s+/i, '');
+        const descLower = (aiIss.description ?? '').toLowerCase();
+        const enExcerptLower = (aiIss.englishExcerpt ?? '').toLowerCase();
+        const mentionsEn =
+          descLower.includes(matchedEnLower) ||
+          enExcerptLower.includes(matchedEnLower) ||
+          (numberOnlyLower.length > 0 &&
+            (descLower.includes(numberOnlyLower) ||
+              enExcerptLower.includes(numberOnlyLower))) ||
+          descLower.includes(String(nf.expectedValue)) ||
+          enExcerptLower.includes(String(nf.expectedValue));
+        const mentionsBn =
+          (Boolean(nf.detectedBanglaText) &&
+            ((aiIss.description ?? '').includes(nf.detectedBanglaText!) ||
+              (aiIss.banglaExcerpt ?? '').includes(nf.detectedBanglaText!))) ||
+          (nf.detectedValue !== undefined &&
+            descLower.includes(String(nf.detectedValue))) ||
+          Boolean(
+            nf.expectedBangla &&
+              (aiIss.description ?? '').includes(nf.expectedBangla)
+          );
+        return mentionsEn && mentionsBn;
+      });
+
+      if (overlapsNumerical) {
+        if (!aiIss.resolved) {
+          deduplicatedAiPenalty += getVerificationIssueScorePenalty(normalizedSeverity);
+        }
         continue;
       }
     }
@@ -3686,7 +4413,12 @@ export function mergeVerificationReportWithTerminologyLint(
           )
         : undefined;
 
-    const aiFindingSignature = computeStrictAiFindingSignature(aiIss);
+    const normalizedCandidateForSig = {
+      ...aiIss,
+      type: normalizedType,
+      severity: normalizedSeverity,
+    };
+    const aiFindingSignature = computeStrictAiFindingSignature(normalizedCandidateForSig);
 
     // Conservative resolution preservation for AI issues in `stage5_full` mode:
     // Never match by `description` alone. Require:
@@ -3716,7 +4448,11 @@ export function mergeVerificationReportWithTerminologyLint(
         if (!prevFp || prevFp !== paragraphContentFingerprint) {
           return false;
         }
-        const prevSig = computeStrictAiFindingSignature(prev);
+        const prevSig = computeStrictAiFindingSignature({
+          ...prev,
+          type: normalizeStage5IssueType(prev.type),
+          severity: normalizeStage5IssueSeverity(prev.severity),
+        });
         return Boolean(prevSig) && prevSig === aiFindingSignature;
       });
 
@@ -3727,6 +4463,9 @@ export function mergeVerificationReportWithTerminologyLint(
 
     const normalizedIssue: VerificationIssue = {
       ...aiIss,
+      type: normalizedType,
+      severity: normalizedSeverity,
+      description: aiIss.description.trim(),
       paragraphIndex: validParagraphIndex,
       suggestedFix: sanitizedSuggestedFix,
       resolved: resolvedState,
@@ -3747,51 +4486,134 @@ export function mergeVerificationReportWithTerminologyLint(
     ...reconciledDeterministicIssues,
   ];
 
-  // Calculate fidelity score accounting for unresolved deterministic terminology findings
+  // Calculate fidelity score accounting for both unresolved deterministic findings and unresolved AI findings
   const hasMissingParagraphs = paragraphs.some(
     (p) => Boolean(p.missingTranslation) || (Boolean(p.englishText?.trim()) && !p.banglaText?.trim())
   );
 
   const unresolvedDet = reconciledDeterministicIssues.filter((i) => !i.resolved);
-  const detPenalty = unresolvedDet.reduce((acc, iss) => {
-    if (iss.severity === 'high') return acc + 8;
-    if (iss.severity === 'medium') return acc + 4;
-    return acc + 1;
-  }, 0);
+  const detPenalty = unresolvedDet.reduce(
+    (acc, iss) => acc + getVerificationIssueScorePenalty(iss),
+    0
+  );
+
+  const unresolvedAi = survivingAiIssues.filter((i) => !i.resolved);
+  const aiPenalty = unresolvedAi.reduce(
+    (acc, iss) => acc + getVerificationIssueScorePenalty(iss),
+    0
+  );
+
+  const validRawAiScore =
+    aiReport &&
+    typeof aiReport.overallScore === 'number' &&
+    Number.isFinite(aiReport.overallScore) &&
+    aiReport.overallScore >= 0 &&
+    aiReport.overallScore <= 100
+      ? Math.round(aiReport.overallScore)
+      : undefined;
 
   const baseScore =
-    aiReport?.overallScore ??
-    previousReport?.overallScore ??
-    (hasMissingParagraphs ? 70 : 98);
+    validRawAiScore ??
+    (previousReport &&
+    typeof previousReport.overallScore === 'number' &&
+    Number.isFinite(previousReport.overallScore)
+      ? Math.max(0, Math.min(100, Math.round(previousReport.overallScore)))
+      : hasMissingParagraphs
+        ? 70
+        : 95);
 
   const adjustedScore =
     mode === 'stage5_full'
-      ? Math.max(0, Math.min(100, baseScore - detPenalty))
+      ? (() => {
+          // If an AI issue was resolved via `previousReport` reconciliation or deduplicated against a deterministic finding,
+          // recover its penalty before applying the unresolved AI ceiling and deterministic penalty so the same fact is never penalized twice.
+          const resolvedViaMergePenalty = survivingAiIssues
+            .filter((i) => i.resolved)
+            .reduce(
+              (acc, iss) => acc + getVerificationIssueScorePenalty(iss),
+              0
+            );
+          const restoredAiBase = Math.min(
+            100,
+            baseScore + resolvedViaMergePenalty + deduplicatedAiPenalty
+          );
+          const cappedAiBase = Math.min(
+            restoredAiBase,
+            Math.max(0, 100 - aiPenalty)
+          );
+          return Math.max(0, Math.min(100, cappedAiBase - detPenalty));
+        })()
       : previousReport && aiReport === null
         ? (() => {
-            const prevUnresolvedDet = previousDeterministicIssues.filter((i) => !i.resolved);
-            const prevPenalty = prevUnresolvedDet.reduce((acc, iss) => {
-              if (iss.severity === 'high') return acc + 8;
-              if (iss.severity === 'medium') return acc + 4;
-              return acc + 1;
-            }, 0);
-            const recoveredBase = Math.min(100, previousReport.overallScore + prevPenalty);
-            return Math.max(0, Math.min(100, recoveredBase - detPenalty));
+            const prevPenalty =
+              typeof priorUnresolvedPenaltyOverride === 'number'
+                ? priorUnresolvedPenaltyOverride
+                : (previousReport.issues ?? [])
+                    .filter((i) => i && !i.resolved)
+                    .reduce(
+                      (acc, iss) => acc + getVerificationIssueScorePenalty(iss),
+                      0
+                    );
+            const recoveredBase = Math.min(
+              100,
+              previousReport.overallScore + prevPenalty
+            );
+            return Math.max(
+              0,
+              Math.min(100, recoveredBase - (detPenalty + aiPenalty))
+            );
           })()
-        : Math.max(0, Math.min(100, baseScore - detPenalty));
+        : Math.max(
+            0,
+            Math.min(100, Math.min(baseScore, 100 - aiPenalty) - detPenalty)
+          );
 
+  const hasUnresolvedHigh = combinedIssues.some(
+    (i) => !i.resolved && i.severity === 'high'
+  );
+
+  const hadPriorPartialPrefix = PARTIAL_VERIFICATION_PREFIX_REGEX.test(
+    previousReport?.fidelitySummary ?? ''
+  );
+  const hadPriorDeterministicOnlyPrefix = /^Deterministic terminology check/i.test(
+    previousReport?.fidelitySummary ?? ''
+  );
+  const aiSummaryHasPartialOrDetPrefix =
+    PARTIAL_VERIFICATION_PREFIX_REGEX.test(aiReport?.fidelitySummary ?? '') ||
+    /^Deterministic terminology check/i.test(aiReport?.fidelitySummary ?? '');
+
+  // Preserve explicit incomplete states (`isComplete: false`):
+  // A downstream merge must NEVER silently convert an explicit `false` into `true`.
   const baseIsComplete = aiReport
-    ? Boolean(aiReport.isComplete)
+    ? typeof aiReport.isComplete === 'boolean'
+      ? aiReport.isComplete && !aiSummaryHasPartialOrDetPrefix
+      : !aiSummaryHasPartialOrDetPrefix &&
+        !hasMissingParagraphs &&
+        survivingAiIssues.every(
+          (i) => i.resolved || (i.severity !== 'high' && i.severity !== 'medium')
+        )
     : previousReport
-      ? Boolean(previousReport.isComplete)
+      ? Boolean(previousReport.isComplete) &&
+        !hadPriorPartialPrefix &&
+        !hadPriorDeterministicOnlyPrefix
       : !hasMissingParagraphs;
 
-  const isComplete = baseIsComplete && !hasMissingParagraphs;
+  const isComplete =
+    baseIsComplete && !hasMissingParagraphs && !hasUnresolvedHigh;
 
-  const baseSummary =
+  const rawSummary =
     aiReport?.fidelitySummary?.trim() ||
     previousReport?.fidelitySummary?.trim() ||
     'Verification completed.';
+
+  const unresolvedNumericalCount = reconciledNumericalIssues.filter(
+    (i) => !i.resolved
+  ).length;
+  const baseSummary =
+    unresolvedNumericalCount > 0 &&
+    !rawSummary.toLowerCase().includes('numerical')
+      ? `${rawSummary} Deterministic numerical verification flagged ${unresolvedNumericalCount} factual number mismatch(es).`
+      : rawSummary;
 
   return {
     overallScore: adjustedScore,
@@ -3800,6 +4622,24 @@ export function mergeVerificationReportWithTerminologyLint(
     issues: combinedIssues,
     checkedAt,
   };
+}
+
+/**
+ * Returns true when a verification issue originated from deterministic numerical verification
+ * (`source === 'deterministic_lint'` with a `numerical:` termId or `deterministic_lint::numerical::` signature),
+ * distinguishing it from glossary terminology rule checks.
+ */
+export function isNumericalDeterministicIssue(
+  issue:
+    | Pick<VerificationIssue, 'source' | 'termId' | 'findingSignature'>
+    | null
+    | undefined
+): boolean {
+  if (!issue || issue.source !== 'deterministic_lint') return false;
+  return Boolean(
+    issue.termId?.startsWith('numerical:') ||
+      issue.findingSignature?.startsWith('deterministic_lint::numerical::')
+  );
 }
 
 // ============================================================================
@@ -6777,6 +7617,18 @@ export function reconcileVerificationReportAfterLocalEdit(
     }
   }
 
+  const priorUnresolvedPenalty = (previousReport.issues ?? [])
+    .filter((i) => i && typeof i === 'object' && !i.resolved)
+    .reduce(
+      (acc, iss) =>
+        acc +
+        getVerificationIssueScorePenalty({
+          severity: normalizeStage5IssueSeverity(iss.severity),
+          resolved: Boolean(iss.resolved),
+        }),
+      0
+    );
+
   const filteredPreviousReport: VerificationReport = {
     ...previousReport,
     issues: remappedPreviousIssues,
@@ -6787,6 +7639,7 @@ export function reconcileVerificationReportAfterLocalEdit(
     lintResult,
     paragraphs: latestParagraphs,
     previousReport: filteredPreviousReport,
+    priorUnresolvedPenaltyOverride: priorUnresolvedPenalty,
     mode: 'local_relint',
     checkedAt,
   });
@@ -6850,6 +7703,7 @@ export interface ReconciledStage4Result {
   changedByStage4ParagraphIndices: number[];
   lintResult: ChapterTerminologyLintResult;
   verificationReport: VerificationReport | null;
+  stageCompletedEditing: boolean;
   stageCompletedVerification: boolean;
   chapterStatus: ChapterStatus;
 }
@@ -6857,17 +7711,15 @@ export interface ReconciledStage4Result {
 /**
  * Pure Stage 4 Literary Editing reconciliation orchestrator:
  * 1. Maps `snapshotParagraphs` to `latestParagraphs` using `mapSnapshotParagraphsToLatest`.
- * 2. Applies Stage 4 polished Bangla (`editedParagraphs[snapIdx]`) ONLY to paragraphs that map
- *    unambiguously and whose English/Bangla content was NOT modified in flight.
- * 3. Preserves in-flight user edits, insertions, same-length replacements, and ambiguous shifted duplicates verbatim.
- * 4. Filters `editorialChanges` to valid integer `snapIdx` slots where Stage 4's edit was applied, remapping to `latestIdx`.
- * 5. Always runs deterministic terminology linting (`lintChapterTerminology`) against the reconciled `latestParagraphs`
- *    and hydrated `latestGlossary`:
- *    - When `latestVerificationReport` is `null` and `lintResult.findings.length === 0`, keeps `verificationReport: null`
- *      and `stageCompletedVerification: false`.
- *    - When `latestVerificationReport` is `null` and `lintResult.findings.length > 0`, produces a deterministic-only
- *      `VerificationReport` (`isComplete: false`, `stageCompletedVerification: false`).
- *    - When `latestVerificationReport` exists, reconciles it against the updated paragraphs and latest glossary.
+ * 2. Validates that `snapshotParagraphs` and `editedParagraphs` are complete, aligned, and non-empty.
+ * 3. Applies Stage 4 polished Bangla (`editedParagraphs[snapIdx]`) ONLY to paragraphs that map
+ *    unambiguously and whose English/Bangla content was NOT modified in flight, without silent fallback.
+ * 4. Preserves in-flight user edits, insertions, same-length replacements, and ambiguous shifted duplicates verbatim.
+ * 5. Filters `editorialChanges` to valid integer `snapIdx` slots where Stage 4's edit was applied, remapping to `latestIdx`.
+ * 6. Computes `stageCompletedEditing: boolean` honestly so incomplete, unmapped, inserted, deleted, reordered,
+ *    or English-replaced paragraphs prevent false Stage 4 completion.
+ * 7. Always runs deterministic terminology linting (`lintChapterTerminology`) against the reconciled `latestParagraphs`
+ *    and hydrated `latestGlossary`.
  */
 export function reconcileStage4ResultWithLatestState(
   params: ReconcileStage4ResultParams
@@ -6884,6 +7736,30 @@ export function reconcileStage4ResultWithLatestState(
     checkedAt = new Date().toISOString(),
   } = params;
 
+  const hasValidSnapshotInput =
+    Array.isArray(snapshotParagraphs) &&
+    snapshotParagraphs.length > 0 &&
+    snapshotParagraphs.every(
+      (p) =>
+        typeof p.englishText === 'string' &&
+        normalizeEnglishTerm(p.englishText).length > 0 &&
+        !p.missingTranslation &&
+        typeof p.banglaText === 'string' &&
+        p.banglaText.trim().length > 0 &&
+        normalizeBanglaUnicode(p.banglaText.trim()).length > 0
+    );
+
+  const isValidStage4Output =
+    hasValidSnapshotInput &&
+    Array.isArray(editedParagraphs) &&
+    editedParagraphs.length === snapshotParagraphs.length &&
+    editedParagraphs.every(
+      (item) =>
+        typeof item === 'string' &&
+        item.trim().length > 0 &&
+        normalizeBanglaUnicode(item.trim()).length > 0
+    );
+
   const mapping = mapSnapshotParagraphsToLatest(
     snapshotParagraphs,
     latestParagraphs
@@ -6893,14 +7769,30 @@ export function reconcileStage4ResultWithLatestState(
   const preservedInFlightParagraphIndices: number[] = [];
   const changedByStage4ParagraphIndices: number[] = [];
   const appliedSnapToLatest = new Map<number, number>();
+  const appliedLatestSet = new Set<number>();
 
   const reconciledParagraphs: ParagraphPair[] = latestParagraphs.map(
     (latestPair, latestIdx) => {
+      if (!isValidStage4Output) {
+        preservedInFlightParagraphIndices.push(latestIdx);
+        return {
+          ...latestPair,
+          index: latestIdx,
+        };
+      }
+
       const snapIdx = mapping.latestToSnapIndex.get(latestIdx);
       const canApplyStage4Edit =
         snapIdx !== undefined && mapping.unchangedLatestIndices.has(latestIdx);
 
-      if (!canApplyStage4Edit) {
+      const rawCandidate =
+        snapIdx !== undefined ? editedParagraphs[snapIdx] : undefined;
+      const candidate =
+        typeof rawCandidate === 'string' ? rawCandidate.trim() : '';
+      const hasValidCandidate =
+        candidate.length > 0 && normalizeBanglaUnicode(candidate).length > 0;
+
+      if (!canApplyStage4Edit || !hasValidCandidate) {
         preservedInFlightParagraphIndices.push(latestIdx);
         return {
           ...latestPair,
@@ -6909,14 +7801,10 @@ export function reconcileStage4ResultWithLatestState(
       }
 
       appliedParagraphIndices.push(latestIdx);
+      appliedLatestSet.add(latestIdx);
       appliedSnapToLatest.set(snapIdx, latestIdx);
 
-      const candidate =
-        typeof editedParagraphs[snapIdx] === 'string'
-          ? editedParagraphs[snapIdx].trim()
-          : '';
-      const resolvedBangla = candidate || latestPair.banglaText;
-      const isStillEmpty = resolvedBangla.trim().length === 0;
+      const resolvedBangla = candidate;
 
       if (
         normalizeBanglaUnicode(resolvedBangla) !==
@@ -6930,14 +7818,9 @@ export function reconcileStage4ResultWithLatestState(
         index: latestIdx,
         previousBanglaText: latestPair.banglaText,
         banglaText: resolvedBangla,
+        lastRefinementAction: 'stage_4_editorial',
       };
-
-      if (!isStillEmpty) {
-        updated.lastRefinementAction = 'stage_4_editorial';
-        delete updated.missingTranslation;
-      } else {
-        updated.missingTranslation = true;
-      }
+      delete updated.missingTranslation;
 
       return updated;
     }
@@ -6946,14 +7829,17 @@ export function reconcileStage4ResultWithLatestState(
   const translatedText =
     joinTranslatedParagraphPairsWithSceneBreaks(reconciledParagraphs);
 
-  const sanitizedNotes: string[] = Array.isArray(editorialNotes)
-    ? editorialNotes
-        .filter((n): n is string => typeof n === 'string' && n.trim().length > 0)
-        .map((n) => n.trim())
-    : [];
+  const sanitizedNotes: string[] =
+    isValidStage4Output && Array.isArray(editorialNotes)
+      ? editorialNotes
+          .filter(
+            (n): n is string => typeof n === 'string' && n.trim().length > 0
+          )
+          .map((n) => n.trim())
+      : [];
 
   const sanitizedChanges: EditorialChange[] = [];
-  if (Array.isArray(editorialChanges)) {
+  if (isValidStage4Output && Array.isArray(editorialChanges)) {
     for (const change of editorialChanges) {
       if (!change || typeof change !== 'object') continue;
       const rawIdx = (change as { paragraphIndex?: unknown }).paragraphIndex;
@@ -6981,6 +7867,45 @@ export function reconcileStage4ResultWithLatestState(
       });
     }
   }
+
+  const stageCompletedEditing =
+    isValidStage4Output &&
+    reconciledParagraphs.length > 0 &&
+    reconciledParagraphs.length === snapshotParagraphs.length &&
+    !mapping.hasStructuralChange &&
+    mapping.deletedSnapIndices.length === 0 &&
+    mapping.reorderedLatestIndices.length === 0 &&
+    mapping.ambiguousDuplicateLatestIndices.length === 0 &&
+    mapping.latestToSnapIndex.size === reconciledParagraphs.length &&
+    reconciledParagraphs.every((p, latestIdx) => {
+      const snapIdx = mapping.latestToSnapIndex.get(latestIdx);
+      if (snapIdx === undefined || snapIdx !== latestIdx) {
+        return false;
+      }
+      const snapPair = snapshotParagraphs[snapIdx];
+      if (!snapPair) {
+        return false;
+      }
+      const hasValidEnglish =
+        typeof p.englishText === 'string' &&
+        normalizeEnglishTerm(p.englishText).length > 0 &&
+        normalizeEnglishTerm(p.englishText) ===
+          normalizeEnglishTerm(snapPair.englishText);
+      const hasValidBangla =
+        !p.missingTranslation &&
+        typeof p.banglaText === 'string' &&
+        p.banglaText.trim().length > 0 &&
+        normalizeBanglaUnicode(p.banglaText.trim()).length > 0;
+      const isInFlightBanglaModifiedOnAlignedEnglish =
+        hasValidEnglish &&
+        !mapping.unchangedLatestIndices.has(latestIdx) &&
+        normalizeBanglaUnicode(p.banglaText.trim()) !==
+          normalizeBanglaUnicode((snapPair.banglaText || '').trim());
+      const isAccountedFor =
+        appliedLatestSet.has(latestIdx) ||
+        isInFlightBanglaModifiedOnAlignedEnglish;
+      return hasValidEnglish && hasValidBangla && isAccountedFor;
+    });
 
   const hydratedLatestGlossary = hydrateProjectGlossary(latestGlossary);
   const lintResult = lintChapterTerminology(
@@ -7036,7 +7961,7 @@ export function reconcileStage4ResultWithLatestState(
         (i) => i.severity === 'high' && !i.resolved
       );
 
-      if (anyParagraphChanged) {
+      if (anyParagraphChanged || !stageCompletedEditing) {
         stageCompletedVerification = false;
         verificationReport = {
           ...reconciledReport,
@@ -7068,6 +7993,7 @@ export function reconcileStage4ResultWithLatestState(
     changedByStage4ParagraphIndices,
     lintResult,
     verificationReport,
+    stageCompletedEditing,
     stageCompletedVerification,
     chapterStatus,
   };
@@ -7085,6 +8011,7 @@ export interface ReconcileStage5ResultParams {
 export interface ReconciledStage5Result {
   verificationReport: VerificationReport;
   lintResult: ChapterTerminologyLintResult;
+  numericalLintResult: ChapterNumericalLintResult;
   verifiedParagraphIndices: number[];
   unverifiedParagraphIndices: number[];
   discardedStaleIssueCount: number;
@@ -7104,7 +8031,7 @@ export interface ReconciledStage5Result {
  *    - Valid `paragraphIndex` (`0 <= snapIdx < snapshotParagraphs.length`) -> kept and remapped to `latestIdx`
  *      ONLY if `snapIdx` maps unambiguously to `latestIdx` AND `unchangedLatestIndices.has(latestIdx)`.
  *      Otherwise discarded as stale (`discardedStaleIssueCount++`).
- * 3. Runs `lintChapterTerminology` against `latestParagraphs` and hydrated `latestGlossary`.
+ * 3. Runs `lintChapterTerminology` and `lintChapterNumericalConsistency` against `latestParagraphs` and hydrated `latestGlossary`.
  * 4. Merges AI and deterministic findings via `mergeVerificationReportWithTerminologyLint` in `'stage5_full'` mode,
  *    conservatively preserving `resolved: true` on unchanged paragraphs.
  * 5. Enforces strict completion and partial-verification score presentation semantics:
@@ -7163,6 +8090,17 @@ export function reconcileStage5ResultWithLatestState(
       continue;
     }
 
+    if (
+      typeof rawIss.description !== 'string' ||
+      rawIss.description.trim().length === 0
+    ) {
+      rejectedInvalidIssueCount++;
+      continue;
+    }
+
+    const normalizedType = normalizeStage5IssueType(rawIss.type);
+    const normalizedSeverity = normalizeStage5IssueSeverity(rawIss.severity);
+
     const rawIdx = (rawIss as { paragraphIndex?: unknown }).paragraphIndex;
 
     // 1. Missing or null paragraphIndex -> legitimate chapter-level issue
@@ -7173,6 +8111,9 @@ export function reconcileStage5ResultWithLatestState(
       }
       const chapterIssue: VerificationIssue = {
         ...rawIss,
+        type: normalizedType,
+        severity: normalizedSeverity,
+        description: rawIss.description.trim(),
         suggestedFix: undefined,
         source: 'ai_stage5',
       };
@@ -7218,6 +8159,9 @@ export function reconcileStage5ResultWithLatestState(
 
     filteredRemappedAiIssues.push({
       ...rawIss,
+      type: normalizedType,
+      severity: normalizedSeverity,
+      description: rawIss.description.trim(),
       paragraphIndex: mappedLatestIdx,
       suggestedFix: validSuggestedFix,
       paragraphContentFingerprint: fp,
@@ -7283,17 +8227,60 @@ export function reconcileStage5ResultWithLatestState(
     latestParagraphs,
     hydratedLatestGlossary
   );
+  const numericalLintResult = lintChapterNumericalConsistency(latestParagraphs);
+
+  const isAiReportStructurallyValid =
+    Boolean(aiReport) &&
+    typeof aiReport === 'object' &&
+    !Array.isArray(aiReport) &&
+    Array.isArray(aiReport.issues);
+
+  const hasValidInRangeAiScore =
+    typeof aiReport?.overallScore === 'number' &&
+    Number.isFinite(aiReport.overallScore) &&
+    aiReport.overallScore >= 0 &&
+    aiReport.overallScore <= 100;
+
+  const defaultCompletionWhenOmitted =
+    isAiReportStructurallyValid &&
+    filteredRemappedAiIssues.every(
+      (i) => i.resolved || (i.severity !== 'high' && i.severity !== 'medium')
+    );
+
+  const aiReportHadHighIssues =
+    isAiReportStructurallyValid &&
+    (aiReport.issues ?? []).some(
+      (i) =>
+        i &&
+        typeof i === 'object' &&
+        normalizeStage5IssueSeverity((i as { severity?: unknown }).severity) ===
+          'high' &&
+        !(i as { resolved?: boolean }).resolved
+    );
+  const aiAuditExplicitlyIncomplete =
+    !isAiReportStructurallyValid ||
+    (aiReport?.isComplete === false && !aiReportHadHighIssues) ||
+    PARTIAL_VERIFICATION_PREFIX_REGEX.test(aiReport?.fidelitySummary ?? '') ||
+    /^Deterministic terminology check/i.test(aiReport?.fidelitySummary ?? '');
 
   const sanitizedAiReport: VerificationReport = {
-    overallScore:
-      typeof aiReport?.overallScore === 'number' &&
-      Number.isFinite(aiReport.overallScore)
-        ? Math.max(0, Math.min(100, Math.round(aiReport.overallScore)))
-        : 95,
+    overallScore: hasValidInRangeAiScore
+      ? Math.round(aiReport.overallScore)
+      : isAiReportStructurallyValid
+        ? 95
+        : 85,
     fidelitySummary:
-      aiReport?.fidelitySummary?.trim() ||
-      'Verification completed successfully.',
-    isComplete: Boolean(aiReport?.isComplete ?? true) && allParagraphsVerified,
+      typeof aiReport?.fidelitySummary === 'string' &&
+      aiReport.fidelitySummary.trim()
+        ? aiReport.fidelitySummary.trim()
+        : 'Verification completed.',
+    isComplete:
+      isAiReportStructurallyValid &&
+      !aiAuditExplicitlyIncomplete &&
+      (typeof aiReport?.isComplete === 'boolean'
+        ? aiReport.isComplete
+        : defaultCompletionWhenOmitted) &&
+      allParagraphsVerified,
     issues: filteredRemappedAiIssues,
     checkedAt,
   };
@@ -7301,6 +8288,7 @@ export function reconcileStage5ResultWithLatestState(
   const mergedReport = mergeVerificationReportWithTerminologyLint({
     aiReport: sanitizedAiReport,
     lintResult,
+    numericalLintResult,
     paragraphs: latestParagraphs,
     previousReport: alignedPreviousReport,
     mode: 'stage5_full',
@@ -7313,6 +8301,7 @@ export function reconcileStage5ResultWithLatestState(
 
   const isComplete =
     Boolean(mergedReport.isComplete) &&
+    !aiAuditExplicitlyIncomplete &&
     allParagraphsVerified &&
     !hasUnresolvedHigh &&
     !hasMissingTranslations;
@@ -7328,7 +8317,10 @@ export function reconcileStage5ResultWithLatestState(
       );
 
   const stageCompletedVerification =
-    allParagraphsVerified && !hasMissingTranslations;
+    isAiReportStructurallyValid &&
+    !aiAuditExplicitlyIncomplete &&
+    allParagraphsVerified &&
+    !hasMissingTranslations;
   const chapterStatus: ChapterStatus = isComplete ? 'completed' : 'needs_review';
 
   const finalReport: VerificationReport = {
@@ -7340,6 +8332,7 @@ export function reconcileStage5ResultWithLatestState(
   return {
     verificationReport: finalReport,
     lintResult,
+    numericalLintResult,
     verifiedParagraphIndices,
     unverifiedParagraphIndices,
     discardedStaleIssueCount,
@@ -7347,6 +8340,3342 @@ export function reconcileStage5ResultWithLatestState(
     allParagraphsVerified,
     stageCompletedVerification,
     chapterStatus,
+  };
+}
+
+// ============================================================================
+// PHASE 2B.4a — PURE STAGE 2 AUTHOR VOICE & STYLE PROFILE RECONCILIATION
+// ============================================================================
+
+export type Stage2AiAnalyzedStyleField = Exclude<
+  keyof StyleProfile,
+  'customNotes'
+>;
+
+/**
+ * Exact eleven AI-analyzed style dimensions on `StyleProfile` returned by Stage 2 (`analyzeAuthorVoice`).
+ * `customNotes` is strictly user-owned content and is excluded from AI overwriting.
+ */
+export const STAGE2_AI_ANALYZED_STYLE_FIELDS: ReadonlyArray<Stage2AiAnalyzedStyleField> =
+  [
+    'overallVoice',
+    'sentenceStructure',
+    'vocabularyComplexity',
+    'narrativePerspective',
+    'dialogueStyle',
+    'emotionalIntensity',
+    'descriptiveTechniques',
+    'metaphorsAndImagery',
+    'literaryCharacteristics',
+    'languageRegister',
+    'banglaAdaptationStrategy',
+  ];
+
+export interface ReconcileStage2ResultParams {
+  snapshotStyleProfile?: StyleProfile | null;
+  snapshotProfile?: StyleProfile | null;
+  latestStyleProfile?: StyleProfile | null;
+  latestProfile?: StyleProfile | null;
+  aiStyleProfile?: Partial<Record<keyof StyleProfile, unknown>> | null;
+  aiProfile?: Partial<Record<keyof StyleProfile, unknown>> | null;
+  candidateStyleProfile?: Partial<Record<keyof StyleProfile, unknown>> | null;
+}
+
+/**
+ * Pure Stage 2 Author Voice & Style Profile reconciliation helper.
+ * Reconciles an AI-generated Stage 2 `StyleProfile` with the user's latest `StyleProfile`
+ * after an asynchronous request:
+ * 1. Protects `customNotes` as strictly user-owned content (preserving concurrent user edits
+ *    or existing snapshot `customNotes`, and never allowing the AI result's hardcoded empty
+ *    `customNotes` or any AI value to replace it).
+ * 2. For each of the 11 AI-analyzed style fields (`STAGE2_AI_ANALYZED_STYLE_FIELDS`):
+ *    - Compares the latest value against the request-start snapshot value.
+ *    - If the values differ (`latestVal !== snapVal`), preserves the latest value verbatim
+ *      (including an intentional empty string `''` when the user cleared a field in flight).
+ *    - If the values are unchanged, accepts the AI result only when that field is genuinely
+ *      present and is a non-empty string (`typeof rawAiVal === 'string' && rawAiVal.trim().length > 0`).
+ *    - If the AI result omits a field (`undefined`) or supplies `null`, an empty/whitespace string,
+ *      or a non-string value, retains the latest value rather than overwriting with an invalid or invented default.
+ * 3. Deterministic and side-effect free: never mutates its input objects.
+ */
+export function reconcileStage2ResultWithLatestState(
+  params: ReconcileStage2ResultParams
+): StyleProfile;
+export function reconcileStage2ResultWithLatestState(
+  snapshotStyleProfile: StyleProfile | null | undefined,
+  latestStyleProfile: StyleProfile | null | undefined,
+  aiStyleProfile: Partial<Record<keyof StyleProfile, unknown>> | null | undefined
+): StyleProfile;
+export function reconcileStage2ResultWithLatestState(
+  firstArg: ReconcileStage2ResultParams | StyleProfile | null | undefined,
+  secondArg?: StyleProfile | null,
+  thirdArg?: Partial<Record<keyof StyleProfile, unknown>> | null
+): StyleProfile {
+  let snapshotProfile: StyleProfile | null | undefined;
+  let latestProfile: StyleProfile | null | undefined;
+  let aiProfile: Partial<Record<keyof StyleProfile, unknown>> | null | undefined;
+
+  const isParamsObject =
+    arguments.length === 1 &&
+    firstArg !== null &&
+    firstArg !== undefined &&
+    typeof firstArg === 'object' &&
+    ('snapshotStyleProfile' in firstArg ||
+      'snapshotProfile' in firstArg ||
+      'latestStyleProfile' in firstArg ||
+      'latestProfile' in firstArg ||
+      'aiStyleProfile' in firstArg ||
+      'aiProfile' in firstArg ||
+      'candidateStyleProfile' in firstArg ||
+      !STAGE2_AI_ANALYZED_STYLE_FIELDS.some((f) => f in firstArg));
+
+  if (isParamsObject) {
+    const params = firstArg as ReconcileStage2ResultParams;
+    snapshotProfile =
+      params.snapshotStyleProfile !== undefined
+        ? params.snapshotStyleProfile
+        : params.snapshotProfile;
+    latestProfile =
+      params.latestStyleProfile !== undefined
+        ? params.latestStyleProfile
+        : params.latestProfile;
+    aiProfile =
+      params.aiStyleProfile !== undefined
+        ? params.aiStyleProfile
+        : params.aiProfile !== undefined
+          ? params.aiProfile
+          : params.candidateStyleProfile;
+  } else {
+    snapshotProfile = firstArg as StyleProfile | null | undefined;
+    latestProfile = secondArg;
+    aiProfile = thirdArg;
+  }
+
+  const snapObj: StyleProfile | null =
+    snapshotProfile !== null &&
+    snapshotProfile !== undefined &&
+    typeof snapshotProfile === 'object'
+      ? snapshotProfile
+      : null;
+  const latestObj: StyleProfile | null =
+    latestProfile !== null &&
+    latestProfile !== undefined &&
+    typeof latestProfile === 'object'
+      ? latestProfile
+      : null;
+  const aiObj: Partial<Record<keyof StyleProfile, unknown>> | null =
+    aiProfile !== null &&
+    aiProfile !== undefined &&
+    typeof aiProfile === 'object' &&
+    !Array.isArray(aiProfile)
+      ? aiProfile
+      : null;
+
+  // A. Preserve customNotes (user-owned content; never overwritten by AI)
+  const snapCustomNotes =
+    snapObj !== null && typeof snapObj.customNotes === 'string'
+      ? snapObj.customNotes
+      : '';
+  const latestCustomNotes =
+    latestObj !== null && typeof latestObj.customNotes === 'string'
+      ? latestObj.customNotes
+      : snapCustomNotes;
+
+  const reconciled: StyleProfile = {
+    overallVoice: '',
+    sentenceStructure: '',
+    vocabularyComplexity: '',
+    narrativePerspective: '',
+    dialogueStyle: '',
+    emotionalIntensity: '',
+    descriptiveTechniques: '',
+    metaphorsAndImagery: '',
+    literaryCharacteristics: '',
+    languageRegister: '',
+    banglaAdaptationStrategy: '',
+    customNotes: latestCustomNotes,
+  };
+
+  // B & C. Reconcile each of the 11 AI-analyzed style fields
+  for (const field of STAGE2_AI_ANALYZED_STYLE_FIELDS) {
+    const snapVal =
+      snapObj !== null && typeof snapObj[field] === 'string'
+        ? snapObj[field]
+        : '';
+    const hasLatestFieldString =
+      latestObj !== null && typeof latestObj[field] === 'string';
+    const latestVal = hasLatestFieldString
+      ? (latestObj![field] as string)
+      : snapVal;
+
+    // If the user changed or intentionally cleared (`''`) this field while Stage 2 was running,
+    // preserve the latest user value verbatim.
+    if (hasLatestFieldString && latestVal !== snapVal) {
+      reconciled[field] = latestVal;
+      continue;
+    }
+
+    // Field was unchanged in flight: accept AI value only if genuinely present and a valid non-empty string
+    const rawAiVal = aiObj !== null ? aiObj[field] : undefined;
+
+    if (typeof rawAiVal === 'string' && rawAiVal.trim().length > 0) {
+      reconciled[field] = rawAiVal.trim();
+    } else {
+      reconciled[field] = latestVal;
+    }
+  }
+
+  return reconciled;
+}
+
+// ============================================================================
+// SUBSTEP 2B.5b — PURE STAGE 3 RECOVERY, RECONCILIATION & FINALIZATION HELPERS
+// ============================================================================
+
+/**
+ * Helper A: Determines whether a Stage 3 chunk is complete based on actual paragraph content
+ * and source alignment rather than relying on the fragile `completedChunks` counter.
+ *
+ * A chunk is complete if and only if:
+ * 1. Valid non-empty chunk bounds (`0 <= startParagraphIndex <= endParagraphIndex < paragraphs.length`)
+ *    match `chunk.paragraphs.length`.
+ * 2. Every paragraph index in `chunk.startParagraphIndex .. chunk.endParagraphIndex` exists in `paragraphs`.
+ * 3. Each paragraph's normalized English text matches `chunk.paragraphs[offset]`.
+ * 4. Each paragraph has non-empty Bangla text (`banglaText.trim().length > 0`).
+ * 5. Each paragraph does not have `missingTranslation === true`.
+ */
+export function isStage3ChunkComplete(
+  chunk:
+    | Pick<TextChunk, 'paragraphs' | 'startParagraphIndex' | 'endParagraphIndex'>
+    | null
+    | undefined,
+  paragraphs: ReadonlyArray<ParagraphPair> | null | undefined
+): boolean {
+  if (
+    !chunk ||
+    !Array.isArray(chunk.paragraphs) ||
+    chunk.paragraphs.length === 0 ||
+    !Array.isArray(paragraphs) ||
+    paragraphs.length === 0
+  ) {
+    return false;
+  }
+
+  const { startParagraphIndex, endParagraphIndex } = chunk;
+  if (
+    typeof startParagraphIndex !== 'number' ||
+    typeof endParagraphIndex !== 'number' ||
+    !Number.isInteger(startParagraphIndex) ||
+    !Number.isInteger(endParagraphIndex) ||
+    startParagraphIndex < 0 ||
+    endParagraphIndex < startParagraphIndex ||
+    endParagraphIndex >= paragraphs.length ||
+    endParagraphIndex - startParagraphIndex + 1 !== chunk.paragraphs.length
+  ) {
+    return false;
+  }
+
+  for (let offset = 0; offset < chunk.paragraphs.length; offset++) {
+    const pIdx = startParagraphIndex + offset;
+    const pair = paragraphs[pIdx];
+    if (!pair) {
+      return false;
+    }
+
+    const expectedEng = normalizeEnglishTerm(chunk.paragraphs[offset] ?? '');
+    const actualEng = normalizeEnglishTerm(pair.englishText ?? '');
+    if (expectedEng.length === 0 || actualEng !== expectedEng) {
+      return false;
+    }
+
+    if (Boolean(pair.missingTranslation)) {
+      return false;
+    }
+
+    const trimmedBangla =
+      typeof pair.banglaText === 'string' ? pair.banglaText.trim() : '';
+    if (
+      trimmedBangla.length === 0 ||
+      normalizeBanglaUnicode(trimmedBangla).length === 0
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+export interface PlanStage3ChunkExecutionParams {
+  originalText: string;
+  paragraphs?: ReadonlyArray<ParagraphPair> | null;
+  maxWordsPerChunk?: number;
+  contextWindow?: number;
+}
+
+export interface Stage3ChunkExecutionPlan {
+  chunks: TextChunk[];
+  chunksToExecute: TextChunk[];
+  completedChunkIndices: number[];
+  pendingChunkIndices: number[];
+  isResumeMode: boolean;
+  allChunksInitiallyComplete: boolean;
+  hasAnyValidTranslation: boolean;
+  eligibleParagraphIndicesByChunk: Map<number, number[]>;
+  protectedParagraphIndicesByChunk: Map<number, number[]>;
+}
+
+/**
+ * Helper B: Pure execution planner for Stage 3 chunked translation.
+ *
+ * Derives chunks via `chunkTextByParagraphs(originalText, maxWordsPerChunk, contextWindow)`
+ * and distinguishes three execution modes:
+ * 1. First pass (0% translated):
+ *    - No valid translated paragraph exists.
+ *    - Executes all chunks (`isResumeMode: false`, `allChunksInitiallyComplete: false`).
+ * 2. Resume / repair pass (partially translated):
+ *    - At least one valid translated paragraph exists, and one or more current chunks are incomplete.
+ *    - Skips completed chunks and executes only incomplete chunks (`isResumeMode: true`, `allChunksInitiallyComplete: false`).
+ *    - Within incomplete chunks, protects paragraph slots that already have valid aligned translations
+ *      (`missingTranslation !== true && banglaText.trim().length > 0`) and marks only missing/empty slots eligible.
+ * 3. Fresh full retranslation (100% translated):
+ *    - Every current paragraph has a valid translation (`allChunksInitiallyComplete: true`).
+ *    - Executes all chunks again (`isResumeMode: false`, `allChunksInitiallyComplete: true`).
+ *
+ * Zero-paragraph manuscripts return an empty plan with `isResumeMode: false` and `allChunksInitiallyComplete: false`.
+ */
+export function planStage3ChunkExecution(
+  params: PlanStage3ChunkExecutionParams
+): Stage3ChunkExecutionPlan {
+  const rawOriginalText =
+    typeof params?.originalText === 'string' ? params.originalText : '';
+  const maxWordsPerChunk =
+    typeof params?.maxWordsPerChunk === 'number' && params.maxWordsPerChunk > 0
+      ? params.maxWordsPerChunk
+      : 500;
+  const contextWindow =
+    typeof params?.contextWindow === 'number' && params.contextWindow >= 0
+      ? params.contextWindow
+      : 2;
+  const paragraphs = Array.isArray(params?.paragraphs) ? params.paragraphs : [];
+
+  const chunks = chunkTextByParagraphs(
+    rawOriginalText,
+    maxWordsPerChunk,
+    contextWindow
+  );
+
+  const eligibleParagraphIndicesByChunk = new Map<number, number[]>();
+  const protectedParagraphIndicesByChunk = new Map<number, number[]>();
+
+  if (chunks.length === 0) {
+    return {
+      chunks: [],
+      chunksToExecute: [],
+      completedChunkIndices: [],
+      pendingChunkIndices: [],
+      isResumeMode: false,
+      allChunksInitiallyComplete: false,
+      hasAnyValidTranslation: false,
+      eligibleParagraphIndicesByChunk,
+      protectedParagraphIndicesByChunk,
+    };
+  }
+
+  let hasAnyValidTranslation = false;
+  for (const chunk of chunks) {
+    for (let offset = 0; offset < chunk.paragraphs.length; offset++) {
+      const pIdx = chunk.startParagraphIndex + offset;
+      const pair = paragraphs[pIdx];
+      if (!pair) continue;
+      const expectedEng = normalizeEnglishTerm(chunk.paragraphs[offset] ?? '');
+      const actualEng = normalizeEnglishTerm(pair.englishText ?? '');
+      const trimmedBangla =
+        typeof pair.banglaText === 'string' ? pair.banglaText.trim() : '';
+      if (
+        expectedEng.length > 0 &&
+        actualEng === expectedEng &&
+        !pair.missingTranslation &&
+        trimmedBangla.length > 0 &&
+        normalizeBanglaUnicode(trimmedBangla).length > 0
+      ) {
+        hasAnyValidTranslation = true;
+        break;
+      }
+    }
+    if (hasAnyValidTranslation) break;
+  }
+
+  // Also check via conservative identity mapping if any current manuscript paragraph has a valid translation
+  if (!hasAnyValidTranslation && paragraphs.length > 0) {
+    for (const pair of paragraphs) {
+      if (!pair) continue;
+      const trimmedBangla =
+        typeof pair.banglaText === 'string' ? pair.banglaText.trim() : '';
+      if (
+        !pair.missingTranslation &&
+        trimmedBangla.length > 0 &&
+        normalizeBanglaUnicode(trimmedBangla).length > 0
+      ) {
+        hasAnyValidTranslation = true;
+        break;
+      }
+    }
+  }
+
+  const completedChunkIndices: number[] = [];
+  const pendingChunkIndices: number[] = [];
+
+  for (const chunk of chunks) {
+    if (isStage3ChunkComplete(chunk, paragraphs)) {
+      completedChunkIndices.push(chunk.chunkIndex);
+    } else {
+      pendingChunkIndices.push(chunk.chunkIndex);
+    }
+  }
+
+  const allChunksInitiallyComplete =
+    chunks.length > 0 && pendingChunkIndices.length === 0;
+  const isResumeMode =
+    hasAnyValidTranslation &&
+    !allChunksInitiallyComplete &&
+    pendingChunkIndices.length > 0;
+
+  const completedSet = new Set<number>(completedChunkIndices);
+  const chunksToExecute = isResumeMode
+    ? chunks.filter((c) => !completedSet.has(c.chunkIndex))
+    : [...chunks];
+
+  for (const chunk of chunks) {
+    const eligibleIndices: number[] = [];
+    const protectedIndices: number[] = [];
+
+    if (!isResumeMode) {
+      // First pass (0%) or Fresh Full Retranslation (100%): all paragraph slots in chunk are eligible
+      for (let offset = 0; offset < chunk.paragraphs.length; offset++) {
+        eligibleIndices.push(chunk.startParagraphIndex + offset);
+      }
+    } else if (completedSet.has(chunk.chunkIndex)) {
+      // Completed chunk in resume mode: skipped, all its slots are protected
+      for (let offset = 0; offset < chunk.paragraphs.length; offset++) {
+        protectedIndices.push(chunk.startParagraphIndex + offset);
+      }
+    } else {
+      // Incomplete chunk in resume mode: protect already-translated aligned slots, mark missing/empty slots eligible
+      for (let offset = 0; offset < chunk.paragraphs.length; offset++) {
+        const pIdx = chunk.startParagraphIndex + offset;
+        const pair = paragraphs[pIdx];
+        const expectedEng = normalizeEnglishTerm(chunk.paragraphs[offset] ?? '');
+        const actualEng = normalizeEnglishTerm(pair?.englishText ?? '');
+        const trimmedBangla =
+          typeof pair?.banglaText === 'string' ? pair.banglaText.trim() : '';
+
+        if (
+          pair &&
+          expectedEng.length > 0 &&
+          actualEng === expectedEng &&
+          !pair.missingTranslation &&
+          trimmedBangla.length > 0 &&
+          normalizeBanglaUnicode(trimmedBangla).length > 0
+        ) {
+          protectedIndices.push(pIdx);
+        } else {
+          eligibleIndices.push(pIdx);
+        }
+      }
+    }
+
+    eligibleParagraphIndicesByChunk.set(chunk.chunkIndex, eligibleIndices);
+    protectedParagraphIndicesByChunk.set(chunk.chunkIndex, protectedIndices);
+  }
+
+  return {
+    chunks,
+    chunksToExecute,
+    completedChunkIndices,
+    pendingChunkIndices,
+    isResumeMode,
+    allChunksInitiallyComplete,
+    hasAnyValidTranslation,
+    eligibleParagraphIndicesByChunk,
+    protectedParagraphIndicesByChunk,
+  };
+}
+
+/**
+ * Internal helper that detects whether a paragraph pair changed between two snapshots
+ * (including English source edits, Bangla edits, manual clears, refinements, or reverts).
+ */
+function hasParagraphChangedBetweenSnapshots(
+  snapPair: ParagraphPair | undefined,
+  latestPair: ParagraphPair | undefined
+): boolean {
+  if (!snapPair || !latestPair) {
+    return true;
+  }
+
+  if (
+    normalizeEnglishTerm(snapPair.englishText ?? '') !==
+    normalizeEnglishTerm(latestPair.englishText ?? '')
+  ) {
+    return true;
+  }
+
+  const snapBanglaRaw = (snapPair.banglaText ?? '').trim();
+  const latestBanglaRaw = (latestPair.banglaText ?? '').trim();
+  if (
+    (snapBanglaRaw.length > 0) !== (latestBanglaRaw.length > 0) ||
+    normalizeBanglaUnicode(snapBanglaRaw) !==
+      normalizeBanglaUnicode(latestBanglaRaw)
+  ) {
+    return true;
+  }
+
+  if (Boolean(snapPair.missingTranslation) !== Boolean(latestPair.missingTranslation)) {
+    return true;
+  }
+
+  if (
+    (snapPair.lastRefinementAction ?? undefined) !==
+    (latestPair.lastRefinementAction ?? undefined)
+  ) {
+    return true;
+  }
+
+  const snapPrevDefined =
+    snapPair.previousBanglaText !== undefined &&
+    snapPair.previousBanglaText !== null;
+  const latestPrevDefined =
+    latestPair.previousBanglaText !== undefined &&
+    latestPair.previousBanglaText !== null;
+  if (snapPrevDefined !== latestPrevDefined) {
+    return true;
+  }
+  if (
+    snapPrevDefined &&
+    latestPrevDefined &&
+    normalizeBanglaUnicode(snapPair.previousBanglaText ?? '') !==
+      normalizeBanglaUnicode(latestPair.previousBanglaText ?? '')
+  ) {
+    return true;
+  }
+
+  if ((snapPair.refinementRationale ?? '') !== (latestPair.refinementRationale ?? '')) {
+    return true;
+  }
+
+  return false;
+}
+
+export interface ReconcileStage3ChunkParams {
+  stage3StartParagraphs?: ReadonlyArray<ParagraphPair> | null;
+  chunkSnapshotParagraphs: ReadonlyArray<ParagraphPair>;
+  latestParagraphs: ReadonlyArray<ParagraphPair>;
+  chunk: Pick<
+    TextChunk,
+    'chunkIndex' | 'paragraphs' | 'startParagraphIndex' | 'endParagraphIndex'
+  > & {
+    paragraphMeta?: TextChunk['paragraphMeta'];
+  };
+  rawChunkOutput: ReadonlyArray<string> | null | undefined;
+  isResumeMode?: boolean;
+}
+
+export interface ReconciledStage3ChunkResult {
+  paragraphs: ParagraphPair[];
+  fullBanglaText: string;
+  lastNonEmptyBangla: string;
+  appliedParagraphIndices: number[];
+  preservedParagraphIndices: number[];
+  rejectedInFlightEditParagraphIndices: number[];
+  missingParagraphIndices: number[];
+  chunkComplete: boolean;
+}
+
+/**
+ * Helper C: Reconciles one completed Stage 3 chunk response against the latest chapter state.
+ *
+ * Guarantees:
+ * - Uses `mapSnapshotParagraphsToLatest` to map `chunkSnapshotParagraphs` -> `latestParagraphs`
+ *   (and `stage3StartParagraphs` -> `latestParagraphs` when provided).
+ * - Never overwrites paragraphs outside the active chunk.
+ * - Never overwrites a paragraph modified during the chunk request or after Stage 3 began
+ *   (manual edit, clear to `""`, Paragraph Studio refinement, revert including revert to `""`, or English source edit).
+ * - In resume mode (`isResumeMode: true`), preserves existing valid translations inside a partially translated chunk
+ *   unless they were empty or marked `missingTranslation === true`.
+ * - In full retranslation mode (`isResumeMode: false`), updates untouched paragraphs with new AI output
+ *   and stores the prior non-empty Bangla translation in `previousBanglaText`.
+ * - Preserves `sceneBreakAfter` and `sceneBreakMarker`.
+ * - Marks eligible slots with empty/missing AI output as `missingTranslation: true` while preserving safe existing content.
+ */
+export function reconcileStage3ChunkWithLatestState(
+  params: ReconcileStage3ChunkParams
+): ReconciledStage3ChunkResult {
+  const chunkSnapshotParagraphs = Array.isArray(params.chunkSnapshotParagraphs)
+    ? params.chunkSnapshotParagraphs
+    : [];
+  const latestParagraphs = Array.isArray(params.latestParagraphs)
+    ? params.latestParagraphs
+    : [];
+  const stage3StartParagraphs = Array.isArray(params.stage3StartParagraphs)
+    ? params.stage3StartParagraphs
+    : null;
+  const chunk = params.chunk;
+  const rawChunkOutput = Array.isArray(params.rawChunkOutput)
+    ? params.rawChunkOutput
+    : [];
+  const isResumeMode = Boolean(params.isResumeMode);
+
+  const mappingFromChunkSnap = mapSnapshotParagraphsToLatest(
+    chunkSnapshotParagraphs,
+    latestParagraphs
+  );
+  const mappingFromStage3Start = stage3StartParagraphs
+    ? mapSnapshotParagraphsToLatest(stage3StartParagraphs, latestParagraphs)
+    : null;
+
+  const appliedParagraphIndices: number[] = [];
+  const preservedParagraphIndices: number[] = [];
+  const rejectedInFlightEditParagraphIndices: number[] = [];
+  const missingParagraphIndices: number[] = [];
+  let lastNonEmptyBangla = '';
+
+  const reconciledParagraphs: ParagraphPair[] = latestParagraphs.map(
+    (latestPair, latestIdx) => {
+      const snapIdx = mappingFromChunkSnap.latestToSnapIndex.get(latestIdx);
+
+      // Case 1: Paragraph in latestParagraphs did not map to any paragraph in chunkSnapshotParagraphs
+      // (e.g. English source text was edited in flight, a new paragraph was inserted in flight,
+      // or duplicate English paragraphs shifted ambiguously after an insertion/deletion).
+      if (snapIdx === undefined) {
+        const trimmedBangla = (latestPair.banglaText ?? '').trim();
+        const isMissing =
+          Boolean(latestPair.missingTranslation) || trimmedBangla.length === 0;
+        const preservedUnmapped: ParagraphPair = {
+          ...latestPair,
+          index: latestIdx,
+        };
+        if (isMissing) {
+          preservedUnmapped.missingTranslation = true;
+          missingParagraphIndices.push(latestIdx);
+        } else {
+          delete preservedUnmapped.missingTranslation;
+        }
+        rejectedInFlightEditParagraphIndices.push(latestIdx);
+        return preservedUnmapped;
+      }
+
+      // Case 2: Paragraph maps unambiguously to a snapshot paragraph outside the active chunk bounds.
+      // Preserve latestPair completely untouched.
+      if (
+        !chunk ||
+        snapIdx < chunk.startParagraphIndex ||
+        snapIdx > chunk.endParagraphIndex
+      ) {
+        return {
+          ...latestPair,
+          index: latestIdx,
+        };
+      }
+
+      // Case 3: Paragraph maps to a slot inside the active chunk (`offset = snapIdx - chunk.startParagraphIndex`).
+      const offset = snapIdx - chunk.startParagraphIndex;
+      const snapPair = chunkSnapshotParagraphs[snapIdx];
+      const chunkMeta = chunk.paragraphMeta?.[offset];
+
+      const hasBreak =
+        latestPair.sceneBreakAfter ??
+        snapPair?.sceneBreakAfter ??
+        chunkMeta?.sceneBreakAfter;
+      const breakMarker =
+        latestPair.sceneBreakMarker !== undefined
+          ? latestPair.sceneBreakMarker
+          : snapPair?.sceneBreakMarker !== undefined
+            ? snapPair.sceneBreakMarker
+            : chunkMeta?.sceneBreakMarker;
+
+      const applySceneBreakMeta = (target: ParagraphPair): ParagraphPair => {
+        if (hasBreak) {
+          target.sceneBreakAfter = true;
+          target.sceneBreakMarker = breakMarker ?? '';
+        }
+        return target;
+      };
+
+      // Guard 3a: Verify English source text alignment with `chunk.paragraphs[offset]`
+      const expectedChunkEng = normalizeEnglishTerm(
+        chunk.paragraphs?.[offset] ?? ''
+      );
+      const snapEng = normalizeEnglishTerm(snapPair?.englishText ?? '');
+      const latestEng = normalizeEnglishTerm(latestPair.englishText ?? '');
+
+      if (
+        expectedChunkEng.length === 0 ||
+        snapEng !== expectedChunkEng ||
+        latestEng !== expectedChunkEng
+      ) {
+        const trimmedLatestBangla = (latestPair.banglaText ?? '').trim();
+        const isMissing =
+          Boolean(latestPair.missingTranslation) ||
+          trimmedLatestBangla.length === 0;
+        const preservedMismatch: ParagraphPair = applySceneBreakMeta({
+          ...latestPair,
+          index: latestIdx,
+        });
+        if (isMissing) {
+          preservedMismatch.missingTranslation = true;
+          missingParagraphIndices.push(latestIdx);
+        } else {
+          delete preservedMismatch.missingTranslation;
+          lastNonEmptyBangla = trimmedLatestBangla;
+        }
+        preservedParagraphIndices.push(latestIdx);
+        rejectedInFlightEditParagraphIndices.push(latestIdx);
+        return preservedMismatch;
+      }
+
+      // Guard 3b: Check if the user modified, cleared, refined, or reverted this paragraph
+      // either while the active chunk was in flight OR since Stage 3 began.
+      const changedDuringChunkRequest =
+        !mappingFromChunkSnap.unchangedLatestIndices.has(latestIdx) ||
+        hasParagraphChangedBetweenSnapshots(snapPair, latestPair);
+
+      let changedSinceStage3Start = false;
+      if (mappingFromStage3Start && stage3StartParagraphs) {
+        const startIdx = mappingFromStage3Start.latestToSnapIndex.get(latestIdx);
+        if (
+          startIdx === undefined ||
+          !mappingFromStage3Start.unchangedLatestIndices.has(latestIdx) ||
+          hasParagraphChangedBetweenSnapshots(
+            stage3StartParagraphs[startIdx],
+            latestPair
+          )
+        ) {
+          changedSinceStage3Start = true;
+        }
+      }
+
+      if (changedDuringChunkRequest || changedSinceStage3Start) {
+        const trimmedLatestBangla = (latestPair.banglaText ?? '').trim();
+        const isMissing =
+          Boolean(latestPair.missingTranslation) ||
+          trimmedLatestBangla.length === 0;
+        const preservedEdited: ParagraphPair = applySceneBreakMeta({
+          ...latestPair,
+          index: latestIdx,
+        });
+        if (isMissing) {
+          preservedEdited.missingTranslation = true;
+          missingParagraphIndices.push(latestIdx);
+        } else {
+          delete preservedEdited.missingTranslation;
+          lastNonEmptyBangla = trimmedLatestBangla;
+        }
+        preservedParagraphIndices.push(latestIdx);
+        rejectedInFlightEditParagraphIndices.push(latestIdx);
+        return preservedEdited;
+      }
+
+      // Guard 3c: In resume mode (`isResumeMode: true`), protect slots that already have a valid translation.
+      const existingBanglaTrimmed = (latestPair.banglaText ?? '').trim();
+      const hasValidExistingTranslation =
+        !latestPair.missingTranslation &&
+        existingBanglaTrimmed.length > 0 &&
+        normalizeBanglaUnicode(existingBanglaTrimmed).length > 0;
+
+      if (isResumeMode && hasValidExistingTranslation) {
+        const preservedResume: ParagraphPair = applySceneBreakMeta({
+          ...latestPair,
+          index: latestIdx,
+        });
+        delete preservedResume.missingTranslation;
+        lastNonEmptyBangla = existingBanglaTrimmed;
+        preservedParagraphIndices.push(latestIdx);
+        return preservedResume;
+      }
+
+      // Eligible slot: apply AI chunk translation if non-empty, or mark missing if empty/truncated.
+      const rawCandidate = rawChunkOutput[offset];
+      const candidateBangla =
+        typeof rawCandidate === 'string' ? rawCandidate.trim() : '';
+
+      if (
+        candidateBangla.length === 0 ||
+        normalizeBanglaUnicode(candidateBangla).length === 0
+      ) {
+        // AI output is empty or missing for this eligible slot:
+        // preserve latest safe content and mark `missingTranslation: true`.
+        const fallbackMissing: ParagraphPair = applySceneBreakMeta({
+          ...latestPair,
+          index: latestIdx,
+          banglaText: latestPair.banglaText ?? '',
+          missingTranslation: true,
+        });
+        missingParagraphIndices.push(latestIdx);
+        return fallbackMissing;
+      }
+
+      const updatedPair: ParagraphPair = applySceneBreakMeta({
+        index: latestIdx,
+        englishText: latestPair.englishText,
+        banglaText: candidateBangla,
+      });
+
+      if (
+        existingBanglaTrimmed.length > 0 &&
+        normalizeBanglaUnicode(existingBanglaTrimmed) !==
+          normalizeBanglaUnicode(candidateBangla)
+      ) {
+        updatedPair.previousBanglaText = existingBanglaTrimmed;
+      } else if (latestPair.previousBanglaText !== undefined) {
+        updatedPair.previousBanglaText = latestPair.previousBanglaText;
+      }
+
+      // Keep refinement metadata only if translation text is unchanged;
+      // clear refinement badge/rationale when replaced by a new Stage 3 translation.
+      if (
+        existingBanglaTrimmed.length > 0 &&
+        normalizeBanglaUnicode(existingBanglaTrimmed) ===
+          normalizeBanglaUnicode(candidateBangla)
+      ) {
+        if (latestPair.lastRefinementAction) {
+          updatedPair.lastRefinementAction = latestPair.lastRefinementAction;
+        }
+        if (latestPair.refinementRationale) {
+          updatedPair.refinementRationale = latestPair.refinementRationale;
+        }
+      }
+
+      lastNonEmptyBangla = candidateBangla;
+      appliedParagraphIndices.push(latestIdx);
+      return updatedPair;
+    }
+  );
+
+  // Check whether any active-chunk snapshot paragraph was deleted or unmapped in latestParagraphs
+  let allActiveChunkSlotsMappedAndTranslated =
+    Boolean(chunk) &&
+    Array.isArray(chunk.paragraphs) &&
+    chunk.paragraphs.length > 0;
+
+  if (allActiveChunkSlotsMappedAndTranslated && chunk) {
+    for (let offset = 0; offset < chunk.paragraphs.length; offset++) {
+      const snapIdx = chunk.startParagraphIndex + offset;
+      const mappedLatestIdx = mappingFromChunkSnap.snapToLatestIndex.get(snapIdx);
+      if (mappedLatestIdx === undefined) {
+        allActiveChunkSlotsMappedAndTranslated = false;
+        break;
+      }
+      const pair = reconciledParagraphs[mappedLatestIdx];
+      const expectedEng = normalizeEnglishTerm(chunk.paragraphs[offset] ?? '');
+      const actualEng = normalizeEnglishTerm(pair?.englishText ?? '');
+      const trimmedBangla = (pair?.banglaText ?? '').trim();
+      if (
+        !pair ||
+        expectedEng.length === 0 ||
+        actualEng !== expectedEng ||
+        Boolean(pair.missingTranslation) ||
+        trimmedBangla.length === 0 ||
+        normalizeBanglaUnicode(trimmedBangla).length === 0
+      ) {
+        allActiveChunkSlotsMappedAndTranslated = false;
+        break;
+      }
+    }
+  }
+
+  const chunkComplete =
+    allActiveChunkSlotsMappedAndTranslated &&
+    missingParagraphIndices.length === 0;
+
+  const fullBanglaText =
+    joinTranslatedParagraphPairsWithSceneBreaks(reconciledParagraphs);
+
+  return {
+    paragraphs: reconciledParagraphs,
+    fullBanglaText,
+    lastNonEmptyBangla,
+    appliedParagraphIndices,
+    preservedParagraphIndices,
+    rejectedInFlightEditParagraphIndices,
+    missingParagraphIndices,
+    chunkComplete,
+  };
+}
+
+export interface FinalizeStage3ChapterStateParams {
+  stage3StartParagraphs?: ReadonlyArray<ParagraphPair> | null;
+  latestParagraphs?: ReadonlyArray<ParagraphPair> | null;
+  latestOriginalText?: string | null;
+  maxWordsPerChunk?: number;
+  contextWindow?: number;
+  previousVerificationReport?: VerificationReport | null;
+  wasVerificationCompleted?: boolean;
+  latestGlossary?: ReadonlyArray<TerminologyMemoryItem> | null;
+  checkedAt?: string;
+}
+
+export interface FinalizedStage3ChapterState {
+  paragraphs: ParagraphPair[];
+  translatedText: string;
+  draftTranslatedText: string;
+  chunkCount: number;
+  completedChunks: number;
+  missingIndices: number[];
+  stageCompletedTranslation: boolean;
+  verificationReport?: VerificationReport;
+  stageCompletedVerification: boolean;
+  status: ChapterStatus;
+  chapterStatus: ChapterStatus;
+}
+
+/**
+ * Helper D: Finalizes chapter state at the end of Stage 3 from the latest reconciled paragraphs.
+ *
+ * Guarantees:
+ * - Never rebuilds from `stage3StartParagraphs` (`preStage3Pairs`).
+ * - Preserves the latest English and Bangla paragraph content and scene breaks.
+ * - Derives `translatedText` and `draftTranslatedText` from the final paragraph pairs.
+ * - Recomputes `chunkCount` and `completedChunks` from the current manuscript and `maxWordsPerChunk`.
+ * - Determines whether every current paragraph has a valid translation (`stageCompletedTranslation`).
+ * - Reconciles `verificationReport` and `stageCompletedVerification` honestly via `reconcileVerificationReportAfterLocalEdit`.
+ */
+export function finalizeStage3ChapterState(
+  params: FinalizeStage3ChapterStateParams
+): FinalizedStage3ChapterState {
+  const maxWordsPerChunk =
+    typeof params?.maxWordsPerChunk === 'number' && params.maxWordsPerChunk > 0
+      ? params.maxWordsPerChunk
+      : 500;
+  const contextWindow =
+    typeof params?.contextWindow === 'number' && params.contextWindow >= 0
+      ? params.contextWindow
+      : 2;
+  const rawLatestParagraphs = Array.isArray(params?.latestParagraphs)
+    ? params.latestParagraphs
+    : [];
+  const hasExplicitOriginalText =
+    params?.latestOriginalText !== undefined &&
+    params?.latestOriginalText !== null;
+  const rawLatestOriginalText = hasExplicitOriginalText
+    ? String(params.latestOriginalText)
+    : '';
+
+  // If the manuscript is explicitly empty and there are no latest paragraphs, return a clean zero-chunk state.
+  if (
+    rawLatestParagraphs.length === 0 &&
+    (!hasExplicitOriginalText || rawLatestOriginalText.trim().length === 0)
+  ) {
+    return {
+      paragraphs: [],
+      translatedText: '',
+      draftTranslatedText: '',
+      chunkCount: 0,
+      completedChunks: 0,
+      missingIndices: [],
+      stageCompletedTranslation: false,
+      verificationReport: undefined,
+      stageCompletedVerification: false,
+      status: 'pending',
+      chapterStatus: 'pending',
+    };
+  }
+
+  // Build finalParagraphs from latestParagraphs (or derive untranslated slots from latestOriginalText if latestParagraphs was empty)
+  let baseParagraphs: ParagraphPair[];
+  if (rawLatestParagraphs.length > 0) {
+    baseParagraphs = rawLatestParagraphs.map((pair, idx) => {
+      const trimmedBangla = (pair.banglaText ?? '').trim();
+      const isMissing =
+        Boolean(pair.missingTranslation) ||
+        trimmedBangla.length === 0 ||
+        normalizeBanglaUnicode(trimmedBangla).length === 0;
+      const cloned: ParagraphPair = {
+        ...pair,
+        index: idx,
+        englishText: pair.englishText ?? '',
+        banglaText: pair.banglaText ?? '',
+      };
+      if (isMissing) {
+        cloned.missingTranslation = true;
+      } else {
+        delete cloned.missingTranslation;
+      }
+      return cloned;
+    });
+  } else {
+    const initialChunks = chunkTextByParagraphs(
+      rawLatestOriginalText,
+      maxWordsPerChunk,
+      contextWindow
+    );
+    baseParagraphs = [];
+    for (const ch of initialChunks) {
+      for (let offset = 0; offset < ch.paragraphs.length; offset++) {
+        const meta = ch.paragraphMeta?.[offset];
+        const pair: ParagraphPair = {
+          index: baseParagraphs.length,
+          englishText: meta?.text ?? ch.paragraphs[offset],
+          banglaText: '',
+          missingTranslation: true,
+        };
+        if (meta?.sceneBreakAfter) {
+          pair.sceneBreakAfter = true;
+          pair.sceneBreakMarker = meta.sceneBreakMarker ?? '';
+        }
+        baseParagraphs.push(pair);
+      }
+    }
+  }
+
+  if (baseParagraphs.length === 0) {
+    return {
+      paragraphs: [],
+      translatedText: '',
+      draftTranslatedText: '',
+      chunkCount: 0,
+      completedChunks: 0,
+      missingIndices: [],
+      stageCompletedTranslation: false,
+      verificationReport: undefined,
+      stageCompletedVerification: false,
+      status: 'pending',
+      chapterStatus: 'pending',
+    };
+  }
+
+  // Determine the effective English manuscript text for chunk boundary computation.
+  // If `latestOriginalText` was provided and its parsed paragraphs align with `baseParagraphs`, use it;
+  // otherwise derive from `baseParagraphs` so in-flight English edits in `latestParagraphs` are always respected.
+  const reconstructedOriginalText = joinParagraphsWithSceneBreaks(
+    baseParagraphs,
+    {
+      field: 'englishText',
+      omitEmpty: false,
+    }
+  );
+
+  let effectiveOriginalText = reconstructedOriginalText;
+  if (hasExplicitOriginalText && rawLatestOriginalText.trim().length > 0) {
+    const candidateChunks = chunkTextByParagraphs(
+      rawLatestOriginalText,
+      maxWordsPerChunk,
+      contextWindow
+    );
+    const totalChunkParas = candidateChunks.reduce(
+      (sum, c) => sum + c.paragraphs.length,
+      0
+    );
+    let matchesLatestParagraphs = totalChunkParas === baseParagraphs.length;
+    if (matchesLatestParagraphs) {
+      for (const c of candidateChunks) {
+        for (let offset = 0; offset < c.paragraphs.length; offset++) {
+          const pIdx = c.startParagraphIndex + offset;
+          if (
+            normalizeEnglishTerm(c.paragraphs[offset] ?? '') !==
+            normalizeEnglishTerm(baseParagraphs[pIdx]?.englishText ?? '')
+          ) {
+            matchesLatestParagraphs = false;
+            break;
+          }
+        }
+        if (!matchesLatestParagraphs) break;
+      }
+    }
+    if (matchesLatestParagraphs) {
+      effectiveOriginalText = rawLatestOriginalText;
+    }
+  }
+
+  const executionPlan = planStage3ChunkExecution({
+    originalText: effectiveOriginalText,
+    paragraphs: baseParagraphs,
+    maxWordsPerChunk,
+    contextWindow,
+  });
+
+  const chunkCount = executionPlan.chunks.length;
+  const completedChunks = executionPlan.completedChunkIndices.length;
+
+  const missingIndices: number[] = [];
+  for (let idx = 0; idx < baseParagraphs.length; idx++) {
+    const p = baseParagraphs[idx];
+    const trimmedBangla = (p.banglaText ?? '').trim();
+    if (
+      Boolean(p.missingTranslation) ||
+      trimmedBangla.length === 0 ||
+      normalizeBanglaUnicode(trimmedBangla).length === 0
+    ) {
+      missingIndices.push(idx);
+    }
+  }
+
+  const stageCompletedTranslation =
+    baseParagraphs.length > 0 &&
+    chunkCount > 0 &&
+    completedChunks === chunkCount &&
+    missingIndices.length === 0;
+
+  const translatedText =
+    joinTranslatedParagraphPairsWithSceneBreaks(baseParagraphs);
+  const draftTranslatedText = translatedText;
+
+  // Check whether any paragraph changed compared to stage3StartParagraphs
+  const stage3StartParagraphs = Array.isArray(params?.stage3StartParagraphs)
+    ? params.stage3StartParagraphs
+    : null;
+
+  let anyParagraphChangedDuringStage3 = false;
+  if (stage3StartParagraphs) {
+    if (stage3StartParagraphs.length !== baseParagraphs.length) {
+      anyParagraphChangedDuringStage3 = true;
+    } else {
+      for (let i = 0; i < baseParagraphs.length; i++) {
+        const startPair = stage3StartParagraphs[i];
+        const finalPair = baseParagraphs[i];
+        if (
+          !startPair ||
+          normalizeEnglishTerm(startPair.englishText ?? '') !==
+            normalizeEnglishTerm(finalPair.englishText ?? '') ||
+          normalizeBanglaUnicode(startPair.banglaText ?? '') !==
+            normalizeBanglaUnicode(finalPair.banglaText ?? '') ||
+          Boolean(startPair.missingTranslation) !==
+            Boolean(finalPair.missingTranslation)
+        ) {
+          anyParagraphChangedDuringStage3 = true;
+          break;
+        }
+      }
+    }
+  }
+
+  let reconciledVerificationReport: VerificationReport | undefined = undefined;
+  if (params?.previousVerificationReport) {
+    const baselineForVerification = stage3StartParagraphs
+      ? [...stage3StartParagraphs]
+      : [...baseParagraphs];
+    const reconciled = reconcileVerificationReportAfterLocalEdit({
+      previousReport: params.previousVerificationReport,
+      previousParagraphs: baselineForVerification,
+      latestParagraphs: baseParagraphs,
+      latestGlossary: Array.isArray(params?.latestGlossary)
+        ? [...params.latestGlossary]
+        : [],
+      checkedAt: params?.checkedAt,
+    });
+    if (reconciled) {
+      if (anyParagraphChangedDuringStage3 || !stageCompletedTranslation) {
+        reconciledVerificationReport = {
+          ...reconciled,
+          isComplete: false,
+        };
+      } else {
+        reconciledVerificationReport = reconciled;
+      }
+    }
+  }
+
+  const stageCompletedVerification =
+    Boolean(params?.wasVerificationCompleted) &&
+    stageCompletedTranslation &&
+    !anyParagraphChangedDuringStage3 &&
+    Boolean(
+      reconciledVerificationReport &&
+        reconciledVerificationReport.isComplete !== false
+    );
+
+  const hasUnresolvedHighIssues = Boolean(
+    reconciledVerificationReport?.issues?.some(
+      (issue) => issue.severity === 'high' && !issue.resolved
+    )
+  );
+
+  const chapterStatus: ChapterStatus =
+    stageCompletedTranslation &&
+    stageCompletedVerification &&
+    !hasUnresolvedHighIssues
+      ? 'completed'
+      : 'needs_review';
+
+  return {
+    paragraphs: baseParagraphs,
+    translatedText,
+    draftTranslatedText,
+    chunkCount,
+    completedChunks,
+    missingIndices,
+    stageCompletedTranslation,
+    verificationReport: reconciledVerificationReport,
+    stageCompletedVerification,
+    status: chapterStatus,
+    chapterStatus,
+  };
+}
+
+// ============================================================================
+// MILESTONE 2B.8b — DETERMINISTIC NUMERICAL VERIFICATION
+// ============================================================================
+
+export type NumericalComparisonStatus =
+  | 'no_mismatch'
+  | 'confirmed_mismatch'
+  | 'missing_number'
+  | 'ambiguous';
+
+export type NumericalFactKind =
+  | 'cardinal'
+  | 'ordinal'
+  | 'age'
+  | 'quantity'
+  | 'address';
+
+export interface EnglishNumericalFact {
+  rawText: string;
+  numberText: string;
+  value: number;
+  kind: NumericalFactKind;
+  isOrdinal: boolean;
+  unitOrNoun?: string;
+  start: number;
+  end: number;
+}
+
+export interface BanglaNumericalToken {
+  rawText: string;
+  stemText: string;
+  suffix: string;
+  value: number;
+  isOrdinal: boolean;
+  isDigit: boolean;
+  contextKind?: NumericalFactKind;
+  start: number;
+  end: number;
+}
+
+export interface NumericalVerificationFinding {
+  id: string;
+  paragraphIndex: number;
+  displayParagraphNumber: number;
+  status: NumericalComparisonStatus;
+  kind: NumericalFactKind;
+  expectedValue: number;
+  detectedValue?: number;
+  matchedEnglishText: string;
+  expectedBangla: string;
+  acceptedBanglaForms: string[];
+  detectedBanglaText?: string;
+  severity: 'high' | 'medium' | 'low';
+  englishExcerpt: string;
+  banglaExcerpt: string;
+  description: string;
+  editorialGuidance?: string;
+  suggestedFix?: undefined;
+  findingSignature: string;
+}
+
+export interface ParagraphNumericalLintResult {
+  paragraphIndex: number;
+  englishFacts: EnglishNumericalFact[];
+  banglaTokens: BanglaNumericalToken[];
+  comparisons: NumericalVerificationFinding[];
+  findings: NumericalVerificationFinding[];
+  confirmedMismatches: NumericalVerificationFinding[];
+  missingNumbers: NumericalVerificationFinding[];
+  ambiguousComparisons: NumericalVerificationFinding[];
+  matchedComparisons: NumericalVerificationFinding[];
+  issues: VerificationIssue[];
+}
+
+export interface ChapterNumericalLintResult {
+  findings: NumericalVerificationFinding[];
+  confirmedMismatches: NumericalVerificationFinding[];
+  missingNumbers: NumericalVerificationFinding[];
+  ambiguousComparisons: NumericalVerificationFinding[];
+  matchedComparisons: NumericalVerificationFinding[];
+  issues: VerificationIssue[];
+  paragraphResults: ParagraphNumericalLintResult[];
+  summary: {
+    totalParagraphsChecked: number;
+    confirmedMismatchCount: number;
+    missingNumberCount: number;
+    ambiguousComparisonCount: number;
+    matchedComparisonCount: number;
+  };
+}
+
+const ENGLISH_CARDINAL_UNITS: Readonly<Record<string, number>> = {
+  zero: 0,
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+  thirteen: 13,
+  fourteen: 14,
+  fifteen: 15,
+  sixteen: 16,
+  seventeen: 17,
+  eighteen: 18,
+  nineteen: 19,
+};
+
+const ENGLISH_CARDINAL_TENS: Readonly<Record<string, number>> = {
+  twenty: 20,
+  thirty: 30,
+  forty: 40,
+  fifty: 50,
+  sixty: 60,
+  seventy: 70,
+  eighty: 80,
+  ninety: 90,
+};
+
+const ENGLISH_ORDINAL_UNITS: Readonly<Record<string, number>> = {
+  first: 1,
+  second: 2,
+  third: 3,
+  fourth: 4,
+  fifth: 5,
+  sixth: 6,
+  seventh: 7,
+  eighth: 8,
+  ninth: 9,
+  tenth: 10,
+  eleventh: 11,
+  twelfth: 12,
+  thirteenth: 13,
+  fourteenth: 14,
+  fifteenth: 15,
+  sixteenth: 16,
+  seventeenth: 17,
+  eighteenth: 18,
+  nineteenth: 19,
+};
+
+const ENGLISH_ORDINAL_TENS: Readonly<Record<string, number>> = {
+  twentieth: 20,
+  thirtieth: 30,
+  fortieth: 40,
+  fiftieth: 50,
+  sixtieth: 60,
+  seventieth: 70,
+  eightieth: 80,
+  ninetieth: 90,
+  hundredth: 100,
+};
+
+interface BanglaCanonicalNumberInfo {
+  value: number;
+  cardinalForms: string[];
+  ordinalForms: string[];
+  banglaDigits: string;
+}
+
+const BANGLA_DIGIT_CHARS = ['০', '১', '২', '৩', '৪', '৫', '৬', '৭', '৮', '৯'] as const;
+
+function toBanglaDigits(n: number): string {
+  return String(Math.max(0, Math.trunc(n)))
+    .split('')
+    .map((ch) => {
+      const code = ch.charCodeAt(0) - 48;
+      return code >= 0 && code <= 9 ? BANGLA_DIGIT_CHARS[code] : ch;
+    })
+    .join('');
+}
+
+const RAW_BANGLA_NUMBER_TABLE: ReadonlyArray<{
+  value: number;
+  cardinals: string[];
+  ordinals?: string[];
+}> = [
+  { value: 0, cardinals: ['শূন্য'] },
+  { value: 1, cardinals: ['এক'], ordinals: ['প্রথম', 'পয়লা', 'পহেলা'] },
+  { value: 2, cardinals: ['দুই', 'দু', 'দুটো', 'দুটি'], ordinals: ['দ্বিতীয়', 'দোসরা'] },
+  { value: 3, cardinals: ['তিন'], ordinals: ['তৃতীয়', 'তেসরা'] },
+  { value: 4, cardinals: ['চার', 'চারি'], ordinals: ['চতুর্থ', 'চৌঠা'] },
+  { value: 5, cardinals: ['পাঁচ', 'পাচ'], ordinals: ['পঞ্চম', 'পাঁচই'] },
+  { value: 6, cardinals: ['ছয়'], ordinals: ['ষষ্ঠ', 'ছয়ই'] },
+  { value: 7, cardinals: ['সাত'], ordinals: ['সপ্তম', 'সাতই'] },
+  { value: 8, cardinals: ['আট'], ordinals: ['অষ্টম', 'আটই'] },
+  { value: 9, cardinals: ['নয়'], ordinals: ['নবম', 'নয়ই'] },
+  { value: 10, cardinals: ['দশ'], ordinals: ['দশম', 'দশই'] },
+  { value: 11, cardinals: ['এগারো', 'এগার'], ordinals: ['একাদশ', 'এগারোই'] },
+  { value: 12, cardinals: ['বারো'], ordinals: ['দ্বাদশ', 'বারোই'] },
+  { value: 13, cardinals: ['তেরো', 'তের'], ordinals: ['ত্রয়োদশ', 'তেরোই'] },
+  { value: 14, cardinals: ['চৌদ্দ'], ordinals: ['চতুর্দশ', 'চৌদ্দই'] },
+  { value: 15, cardinals: ['পনেরো', 'পনের', 'পনর'], ordinals: ['পঞ্চদশ', 'পনেরোই'] },
+  { value: 16, cardinals: ['ষোলো', 'ষোল'], ordinals: ['ষোড়শ', 'ষোলোই'] },
+  { value: 17, cardinals: ['সতেরো', 'সতের'], ordinals: ['সপ্তদশ', 'সতেরোই'] },
+  { value: 18, cardinals: ['আঠারো', 'আঠার'], ordinals: ['অষ্টাদশ', 'আঠারোই'] },
+  { value: 19, cardinals: ['উনিশ'], ordinals: ['ঊনবিংশ', 'উনবিংশ', 'উনিশে'] },
+  { value: 20, cardinals: ['বিশ', 'কুড়ি'], ordinals: ['বিংশ', 'বিশে'] },
+  { value: 21, cardinals: ['একুশ'], ordinals: ['একুশে', 'একবিংশ'] },
+  { value: 22, cardinals: ['বাইশ'], ordinals: ['বাইশে', 'দ্বাবিংশ'] },
+  { value: 23, cardinals: ['তেইশ'], ordinals: ['তেইশে', 'ত্রয়োবিংশ'] },
+  { value: 24, cardinals: ['চব্বিশ'], ordinals: ['চব্বিশে', 'চতুর্বিংশ'] },
+  { value: 25, cardinals: ['পঁচিশ', 'পচিশ'], ordinals: ['পঁচিশে', 'পঞ্চবিংশ'] },
+  { value: 26, cardinals: ['ছাব্বিশ'], ordinals: ['ছাব্বিশে', 'ষড়বিংশ'] },
+  { value: 27, cardinals: ['সাতাশ', 'সাতাইশ'], ordinals: ['সাতাশে', 'সাতাইশে', 'সপ্তবিংশ'] },
+  { value: 28, cardinals: ['আটাশ', 'আঠাশ'], ordinals: ['আটাশে', 'আঠাশে', 'অষ্টাবিংশ'] },
+  { value: 29, cardinals: ['ঊনত্রিশ', 'উনত্রিশ'], ordinals: ['ঊনত্রিশে', 'উনত্রিশে'] },
+  { value: 30, cardinals: ['ত্রিশ', 'তিরিশ'], ordinals: ['ত্রিশে', 'তিরিশে', 'ত্রিংশ'] },
+  { value: 31, cardinals: ['একত্রিশ'], ordinals: ['একত্রিশে'] },
+  { value: 32, cardinals: ['বত্রিশ'], ordinals: ['বত্রিশে'] },
+  { value: 33, cardinals: ['তেত্রিশ'], ordinals: ['তেত্রিশে'] },
+  { value: 34, cardinals: ['চৌত্রিশ'] },
+  { value: 35, cardinals: ['পঁয়ত্রিশ', 'পয়ত্রিশ'] },
+  { value: 36, cardinals: ['ছত্রিশ'] },
+  { value: 37, cardinals: ['সাঁইত্রিশ', 'সাইত্রিশ'] },
+  { value: 38, cardinals: ['আটত্রিশ'] },
+  { value: 39, cardinals: ['ঊনচল্লিশ', 'উনচল্লিশ'] },
+  { value: 40, cardinals: ['চল্লিশ'], ordinals: ['চত্বারিংশ'] },
+  { value: 41, cardinals: ['একচল্লিশ'] },
+  { value: 42, cardinals: ['বিয়াল্লিশ'] },
+  { value: 43, cardinals: ['তেতাল্লিশ', 'তেঁতাল্লিশ'] },
+  { value: 44, cardinals: ['চুয়াল্লিশ'] },
+  { value: 45, cardinals: ['পঁয়তাল্লিশ', 'পয়তাল্লিশ'] },
+  { value: 46, cardinals: ['ছেচল্লিশ'] },
+  { value: 47, cardinals: ['সাতচল্লিশ'] },
+  { value: 48, cardinals: ['আটচল্লিশ'] },
+  { value: 49, cardinals: ['ঊনপঞ্চাশ', 'উনপঞ্চাশ'] },
+  { value: 50, cardinals: ['পঞ্চাশ'], ordinals: ['পঞ্চাশৎ'] },
+  { value: 51, cardinals: ['একান্ন'] },
+  { value: 52, cardinals: ['বায়ান্ন', 'বাহান্ন'] },
+  { value: 53, cardinals: ['তিপ্পান্ন'] },
+  { value: 54, cardinals: ['চুয়ান্ন'] },
+  { value: 55, cardinals: ['পঞ্চান্ন'] },
+  { value: 56, cardinals: ['ছাপ্পান্ন'] },
+  { value: 57, cardinals: ['সাতান্ন'] },
+  { value: 58, cardinals: ['আটান্ন'] },
+  { value: 59, cardinals: ['ঊনষাট', 'উনষাট'] },
+  { value: 60, cardinals: ['ষাট'] },
+  { value: 61, cardinals: ['একষট্টি'] },
+  { value: 62, cardinals: ['বাষট্টি'] },
+  { value: 63, cardinals: ['তেষট্টি'] },
+  { value: 64, cardinals: ['চৌষট্টি'] },
+  { value: 65, cardinals: ['পঁয়ষট্টি', 'পয়ষট্টি'] },
+  { value: 66, cardinals: ['ছেষট্টি'] },
+  { value: 67, cardinals: ['সাতষট্টি'] },
+  { value: 68, cardinals: ['আটষট্টি'] },
+  { value: 69, cardinals: ['ঊনসত্তর', 'উনসত্তর'] },
+  { value: 70, cardinals: ['সত্তর'] },
+  { value: 71, cardinals: ['একাত্তর'] },
+  { value: 72, cardinals: ['বাহাত্তর'] },
+  { value: 73, cardinals: ['তেহাত্তর', 'তিয়াত্তর'] },
+  { value: 74, cardinals: ['চুয়াত্তর'] },
+  { value: 75, cardinals: ['পঁচাত্তর', 'পচাত্তর'] },
+  { value: 76, cardinals: ['ছিয়াত্তর'] },
+  { value: 77, cardinals: ['সাতাত্তর'] },
+  { value: 78, cardinals: ['আটাত্তর'] },
+  { value: 79, cardinals: ['ঊনআশি', 'উনআশি'] },
+  { value: 80, cardinals: ['আশি'] },
+  { value: 81, cardinals: ['একাশি'] },
+  { value: 82, cardinals: ['বিরাশি', 'বেরাশি'] },
+  { value: 83, cardinals: ['তিরাশি'] },
+  { value: 84, cardinals: ['চুরাশি'] },
+  { value: 85, cardinals: ['পঁচাশি', 'পচাশি'] },
+  { value: 86, cardinals: ['ছিয়াশি'] },
+  { value: 87, cardinals: ['সাতাশি'] },
+  { value: 88, cardinals: ['আটাশি', 'অষ্টাশি'] },
+  { value: 89, cardinals: ['ঊননব্বই', 'উননব্বই'] },
+  { value: 90, cardinals: ['নব্বই'] },
+  { value: 91, cardinals: ['একানব্বই'] },
+  { value: 92, cardinals: ['বিরানব্বই', 'বেরানব্বই'] },
+  { value: 93, cardinals: ['তিরানব্বই'] },
+  { value: 94, cardinals: ['চুরানব্বই'] },
+  { value: 95, cardinals: ['পঁচানব্বই', 'পচানব্বই'] },
+  { value: 96, cardinals: ['ছিয়ানব্বই'] },
+  { value: 97, cardinals: ['সাতানব্বই'] },
+  { value: 98, cardinals: ['আটানব্বই'] },
+  { value: 99, cardinals: ['নিরানব্বই'] },
+  { value: 100, cardinals: ['একশো', 'একশ', 'শত'], ordinals: ['শততম'] },
+  { value: 1000, cardinals: ['হাজার', 'সহস্র'], ordinals: ['সহস্রতম'] },
+];
+
+const BANGLA_CANONICAL_BY_VALUE = new Map<number, BanglaCanonicalNumberInfo>();
+
+interface BanglaStemLookupEntry {
+  stem: string;
+  value: number;
+  isOrdinalStem: boolean;
+}
+
+const BANGLA_STEM_LOOKUP: BanglaStemLookupEntry[] = [];
+
+for (const row of RAW_BANGLA_NUMBER_TABLE) {
+  const normCardinals = row.cardinals.map((c) => normalizeBanglaUnicode(c));
+  const normOrdinals = (row.ordinals ?? []).map((o) => normalizeBanglaUnicode(o));
+  const banglaDigits = toBanglaDigits(row.value);
+
+  BANGLA_CANONICAL_BY_VALUE.set(row.value, {
+    value: row.value,
+    cardinalForms: normCardinals,
+    ordinalForms: normOrdinals,
+    banglaDigits,
+  });
+
+  for (const c of normCardinals) {
+    BANGLA_STEM_LOOKUP.push({
+      stem: c,
+      value: row.value,
+      isOrdinalStem: false,
+    });
+  }
+  for (const o of normOrdinals) {
+    if (!normCardinals.includes(o)) {
+      BANGLA_STEM_LOOKUP.push({
+        stem: o,
+        value: row.value,
+        isOrdinalStem: true,
+      });
+    }
+  }
+}
+
+// Sort strictly by descending stem length so longer stems (e.g. "সাতাশি" [87], "সাতাইশ" [27],
+// "আটত্রিশ" [38], "আটাশি" [88], "সাতাশ" [27]) are tested before shorter prefixes ("সাত" [7], "আট" [8]).
+BANGLA_STEM_LOOKUP.sort(
+  (a, b) => b.stem.length - a.stem.length || a.value - b.value
+);
+
+/**
+ * Closed whitelist of grammatical suffixes, classifiers, ordinal suffixes, and case markers
+ * that may validly attach to a Bangla numeral stem or digit token.
+ *
+ * CRITICAL DISTINCTION:
+ * Dependent vowel sign `ি` (\u09BF) and `িটি` (\u09BF\u099F\u09BF) are NEVER valid suffixes.
+ * Therefore:
+ * - "সাতাশি" (87) and "সাতাশিটি" (87 + টি) match ONLY stem "সাতাশি" (87) with suffix "" or "টি",
+ *   and can NEVER match stem "সাতাশ" (27) because "ি" and "িটি" are rejected as suffixes.
+ * - "সাতাশটি" (27 + টি) matches ONLY stem "সাতাশ" (27) with suffix "টি".
+ * - "আটাশি" (88) and "আটাশিটি" (88 + টি) match ONLY stem "আটাশি" (88), never "আটাশ" (28).
+ */
+const EXTRA_BANGLA_NUMERICAL_SUFFIXES: ReadonlySet<string> = new Set<string>(
+  [
+    'টে',
+    'টের',
+    'টেয়',
+    'টেতে',
+    'টেও',
+    'টেই',
+    'টেকে',
+    'টো',
+    'টোর',
+    'টোয়',
+    'টোতে',
+    'টোও',
+    'টোই',
+    'টোকে',
+    'জন',
+    'জনের',
+    'জনকে',
+    'জনে',
+    'জনেই',
+    'জনও',
+    'জনই',
+    'বার',
+    'বারে',
+    'বারের',
+    'বারও',
+    'বারই',
+    'তম',
+    'তমের',
+    'তমটি',
+    'তমটা',
+    'ই', // Independent vowel ই (\u0987, e.g. চৌদ্দই, সতেরোই), distinct from dependent vowel sign ি (\u09BF)
+    'ও',
+    'শে',
+    'লা',
+    'রা',
+    'ঠা',
+    'ম',
+    'য়',
+    'র্থ',
+    'ষ্ঠ',
+    'শ',
+    'তলা',
+    'তলায়',
+    'তলার',
+    'গুণ',
+  ].map((s) => normalizeBanglaUnicode(s))
+);
+
+const ORDINAL_INDICATING_SUFFIXES: ReadonlySet<string> = new Set<string>(
+  ['তম', 'তমের', 'তমটি', 'তমটা', 'ই', 'শে', 'লা', 'রা', 'ঠা', 'র্থ', 'ষ্ঠ'].map((s) =>
+    normalizeBanglaUnicode(s)
+  )
+);
+
+const DEFINITE_CLASSIFIER_SUFFIXES: ReadonlySet<string> = new Set<string>(
+  [
+    'টি',
+    'টা',
+    'টির',
+    'টার',
+    'টিকে',
+    'টাকে',
+    'টিতে',
+    'টাতে',
+    'টায়',
+    'টিও',
+    'টিই',
+    'টাও',
+    'টাই',
+    'টে',
+    'টের',
+    'টেয়',
+    'টেতে',
+    'টেও',
+    'টেই',
+    'টেকে',
+    'টো',
+    'টোর',
+    'টোয়',
+    'টোতে',
+    'টোও',
+    'টোই',
+    'টোকে',
+    'খানা',
+    'খানি',
+    'খানার',
+    'খানির',
+    'জন',
+    'জনের',
+    'জনকে',
+    'জনে',
+    'বার',
+    'তম',
+    'তলা',
+    'গুণ',
+  ].map((s) => normalizeBanglaUnicode(s))
+);
+
+export function isAllowedBanglaNumericalSuffix(
+  stem: string,
+  suffix: string,
+  isDigitStem = false
+): boolean {
+  const normSuffix = normalizeBanglaUnicode(suffix);
+  if (!normSuffix) return true;
+
+  // Never allow dependent vowel sign ি (\u09BF) at the start of a suffix:
+  // prevents "সাতাশ" (27) from matching "সাতাশি" (87) or "সাতাশিটি" (87),
+  // and prevents "আটাশ" (28) from matching "আটাশি" (88) or "আটাশিটি" (88).
+  if (normSuffix.charCodeAt(0) === 0x09bf) {
+    return false;
+  }
+
+  if (EXTRA_BANGLA_NUMERICAL_SUFFIXES.has(normSuffix)) {
+    return true;
+  }
+
+  if (isDigitStem) {
+    return (
+      UNIVERSAL_BANGLA_NOMINAL_SUFFIXES.has(normSuffix) ||
+      CONSONANT_STEM_ONLY_SUFFIXES.has(normSuffix) ||
+      VOWEL_STEM_ONLY_SUFFIXES.has(normSuffix)
+    );
+  }
+
+  return isAllowedBanglaNominalSuffix(stem, normSuffix);
+}
+
+/**
+ * Normalizes a single Bangla word/digit token into its underlying numerical value,
+ * base stem, and grammatical classifier/case/ordinal suffix.
+ * Returns `null` if the token is not a valid Bangla number construction.
+ */
+export function normalizeBanglaNumberToken(rawToken: string): {
+  value: number;
+  stemText: string;
+  suffix: string;
+  isOrdinal: boolean;
+  isDigit: boolean;
+} | null {
+  const cleaned = normalizeBanglaUnicode(rawToken).replace(
+    /^[^\u0980-\u09FF0-9]+|[^\u0980-\u09FF0-9]+$/g,
+    ''
+  );
+  if (!cleaned) return null;
+
+  // 1. Check leading Bangla or Arabic digits (e.g. "৮৮", "৮৮টি", "88", "১৪ই", "১১তম")
+  const digitMatch = /^([\u09E6-\u09EF0-9]+)(.*)$/.exec(cleaned);
+  if (digitMatch) {
+    const digitPart = digitMatch[1];
+    const remSuffix = digitMatch[2] ?? '';
+    if (!isAllowedBanglaNumericalSuffix(digitPart, remSuffix, true)) {
+      return null;
+    }
+    const asciiDigits = digitPart
+      .split('')
+      .map((ch) => {
+        const code = ch.charCodeAt(0);
+        if (code >= 0x09e6 && code <= 0x09ef) {
+          return String(code - 0x09e6);
+        }
+        return ch;
+      })
+      .join('');
+    const parsedVal = Number.parseInt(asciiDigits, 10);
+    if (!Number.isFinite(parsedVal) || parsedVal < 0) {
+      return null;
+    }
+    return {
+      value: parsedVal,
+      stemText: digitPart,
+      suffix: remSuffix,
+      isOrdinal: ORDINAL_INDICATING_SUFFIXES.has(remSuffix),
+      isDigit: true,
+    };
+  }
+
+  // 2. Check lexical Bangla number stems (ordered longest-first)
+  for (const entry of BANGLA_STEM_LOOKUP) {
+    if (!cleaned.startsWith(entry.stem)) continue;
+    const remSuffix = cleaned.slice(entry.stem.length);
+
+    // Short stem "দু" (2) is only valid as exact "দু" (when followed by a unit) or with a definite classifier ("দুটো", "দুটি", "দুজন", "দুখানা", "দুবার")
+    if (entry.stem === 'দু' && remSuffix.length > 0 && !DEFINITE_CLASSIFIER_SUFFIXES.has(remSuffix)) {
+      continue;
+    }
+
+    if (!isAllowedBanglaNumericalSuffix(entry.stem, remSuffix, false)) {
+      continue;
+    }
+
+    return {
+      value: entry.value,
+      stemText: entry.stem,
+      suffix: remSuffix,
+      isOrdinal:
+        entry.isOrdinalStem || ORDINAL_INDICATING_SUFFIXES.has(remSuffix),
+      isDigit: false,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Returns the canonical Bangla primary representation, accepted lexical/digit alternatives,
+ * and Bangla digit string for a given integer value and contextual fact kind.
+ */
+export function getCanonicalBanglaNumberForms(
+  value: number,
+  kind: NumericalFactKind = 'cardinal'
+): {
+  primary: string;
+  alternatives: string[];
+  banglaDigits: string;
+} {
+  const banglaDigits = toBanglaDigits(value);
+  const info = BANGLA_CANONICAL_BY_VALUE.get(value);
+  if (!info) {
+    return {
+      primary: banglaDigits,
+      alternatives: [String(value)],
+      banglaDigits,
+    };
+  }
+
+  const basePrimary = info.cardinalForms[0] ?? banglaDigits;
+  if (kind === 'address') {
+    const primary = `${basePrimary} নম্বর`;
+    const alternatives = deduplicateBanglaList(
+      [
+        ...info.cardinalForms.map((c) => `${c} নম্বর`),
+        `${banglaDigits} নম্বর`,
+        ...info.cardinalForms,
+        ...info.ordinalForms,
+        banglaDigits,
+      ],
+      new Set([primary])
+    );
+    return { primary, alternatives, banglaDigits };
+  }
+
+  if (kind === 'ordinal') {
+    const ordPrimary = info.ordinalForms[0] ?? `${basePrimary} নম্বর`;
+    const alternatives = deduplicateBanglaList(
+      [
+        ...info.ordinalForms,
+        ...info.cardinalForms.map((c) => `${c} নম্বর`),
+        ...info.cardinalForms.map((c) => `${c}তম`),
+        `${banglaDigits}তম`,
+        `${banglaDigits} নম্বর`,
+        ...info.cardinalForms,
+        banglaDigits,
+      ],
+      new Set([ordPrimary])
+    );
+    return { primary: ordPrimary, alternatives, banglaDigits };
+  }
+
+  const alternatives = deduplicateBanglaList(
+    [...info.cardinalForms.slice(1), ...info.ordinalForms, banglaDigits],
+    new Set([basePrimary])
+  );
+  return {
+    primary: basePrimary,
+    alternatives,
+    banglaDigits,
+  };
+}
+
+const BANGLA_ADDRESS_MARKERS: ReadonlySet<string> = new Set(
+  ['নম্বর', 'নম্বরে', 'নম্বরের', 'নম্বরটি', 'নম্বরটা', 'নং'].map((s) =>
+    normalizeBanglaUnicode(s)
+  )
+);
+
+const BANGLA_AGE_OR_YEAR_MARKERS: ReadonlySet<string> = new Set(
+  [
+    'বছর',
+    'বছরে',
+    'বছরের',
+    'বছরটা',
+    'বছরটি',
+    'বৎসর',
+    'বৎসরে',
+    'বৎসরের',
+    'বয়স',
+    'বয়সে',
+    'বয়সের',
+    'বয়সী',
+  ].map((s) => normalizeBanglaUnicode(s))
+);
+
+const BANGLA_DATE_OR_ORDINAL_MARKERS: ReadonlySet<string> = new Set(
+  [
+    'তারিখ',
+    'তারিখে',
+    'তারিখেই',
+    'তারিখের',
+    'তারিখটা',
+    'তারিখটি',
+    'তারিখটায়',
+  ].map((s) => normalizeBanglaUnicode(s))
+);
+
+const BANGLA_MEASUREMENT_OR_TIME_UNITS: ReadonlySet<string> = new Set(
+  [
+    'দিন',
+    'দিনে',
+    'দিনের',
+    'মাস',
+    'মাসে',
+    'মাসের',
+    'সপ্তাহ',
+    'সপ্তাহে',
+    'সপ্তাহের',
+    'ঘণ্টা',
+    'ঘণ্টায়',
+    'ঘণ্টার',
+    'মিনিট',
+    'মিনিটে',
+    'মিনিটের',
+    'সেকেন্ড',
+    'মাইল',
+    'ফুট',
+    'হাত',
+    'গজ',
+    'টাকা',
+    'পয়সা',
+    'বার',
+    'পা',
+    'কদম',
+    'পৃষ্ঠা',
+    'পাতা',
+    'অধ্যায়',
+    'নোট',
+    'চিঠি',
+    'বাড়ি',
+    'ঘর',
+    'কক্ষ',
+    'জানালা',
+    'দরজা',
+  ].map((s) => normalizeBanglaUnicode(s))
+);
+
+/**
+ * Words that commonly precede Bangla negative copula "নয়" ("is not") when it is NOT the number 9.
+ */
+const BANGLA_NEGATIVE_COPULA_PRECEDERS: ReadonlySet<string> = new Set(
+  [
+    'তা',
+    'এটা',
+    'সেটা',
+    'ওটা',
+    'কিছু',
+    'কিছুই',
+    'মোটেও',
+    'মোটেই',
+    'কখনো',
+    'কখনোই',
+    'আসলে',
+    'শুধু',
+    'কেবল',
+    'যথেষ্ট',
+    'সম্ভব',
+    'সহজ',
+    'কঠিন',
+    'সত্য',
+    'সত্যি',
+    'মিথ্যা',
+    'মিথ্যে',
+    'ঠিক',
+    'ভুল',
+    'উচিত',
+    'দরকার',
+    'প্রয়োজন',
+    'কম',
+    'বেশি',
+    'একা',
+    'নতুন',
+    'পুরোনো',
+    'ভালো',
+    'খারাপ',
+    'স্বাভাবিক',
+    'অস্বাভাবিক',
+  ].map((s) => normalizeBanglaUnicode(s))
+);
+
+const BANGLA_IDIOMATIC_NUMBER_PAIRS: ReadonlySet<string> = new Set(
+  [
+    'সাত পাঁচ',
+    'নয় ছয়',
+    'উনিশ বিশ',
+    'এক আধ',
+    'একটু আধটু',
+    'আট ঘাট',
+    'এক এক',
+    'একে একে',
+    'দু এক',
+    'দুই এক',
+    'দু চার',
+    'দুই চার',
+    'চার পাঁচ',
+    'পাঁচ সাত',
+    'সাত আট',
+    'দশ বারো',
+  ].map((s) => normalizeBanglaUnicode(s))
+);
+
+/**
+ * Extracts explicit Bangla numerical tokens from a Bangla paragraph,
+ * normalizing classifiers/suffixes while filtering out non-numerical homographs
+ * (such as clause-final negative copula "নয়" = "is not") and idiomatic reduplications.
+ */
+export function parseBanglaNumericalTokens(
+  banglaText: string
+): BanglaNumericalToken[] {
+  const normalizedText = normalizeBanglaUnicode(banglaText ?? '');
+  if (!normalizedText) return [];
+
+  const rawWords: Array<{
+    word: string;
+    start: number;
+    end: number;
+    followingChars: string;
+  }> = [];
+
+  const wordRegex = /[\u0980-\u09FF0-9]+/g;
+  let match: RegExpExecArray | null;
+  while ((match = wordRegex.exec(normalizedText)) !== null) {
+    const start = match.index;
+    const end = start + match[0].length;
+    rawWords.push({
+      word: match[0],
+      start,
+      end,
+      followingChars: normalizedText.slice(end, Math.min(normalizedText.length, end + 4)),
+    });
+  }
+
+  const tokens: BanglaNumericalToken[] = [];
+  let idx = 0;
+
+  while (idx < rawWords.length) {
+    const current = rawWords[idx];
+    const next = idx + 1 < rawWords.length ? rawWords[idx + 1] : undefined;
+    const prev = idx > 0 ? rawWords[idx - 1] : undefined;
+
+    // 1. Skip idiomatic Bangla number pairs (e.g., "সাত-পাঁচ", "নয়-ছয়", "উনিশ-বিশ", "একে একে")
+    if (next) {
+      const pairStr = `${current.word} ${next.word}`;
+      const normCurr = normalizeBanglaNumberToken(current.word);
+      const normNext = normalizeBanglaNumberToken(next.word);
+      const betweenText = normalizedText.slice(current.end, next.start);
+      const isImmediatelyAdjacentOrHyphenated = /^[\s-]*$/.test(betweenText);
+
+      if (
+        isImmediatelyAdjacentOrHyphenated &&
+        (BANGLA_IDIOMATIC_NUMBER_PAIRS.has(pairStr) ||
+          (normCurr &&
+            normNext &&
+            BANGLA_IDIOMATIC_NUMBER_PAIRS.has(
+              `${normCurr.stemText} ${normNext.stemText}`
+            )))
+      ) {
+        idx += 2;
+        continue;
+      }
+    }
+
+    const parsed = normalizeBanglaNumberToken(current.word);
+    if (!parsed) {
+      idx++;
+      continue;
+    }
+
+    // 2. Filter out non-numerical Bangla homograph "নয়" ("is not" negative copula)
+    if (!parsed.isDigit && parsed.stemText === 'নয়' && parsed.suffix === '') {
+      const nextWord = next?.word ?? '';
+      const prevWord = prev?.word ?? '';
+      const isFollowedByClauseBoundary = /^[।,;.?!—–)\]"'”’\s]*$/.test(
+        current.followingChars
+      ) && (current.followingChars.includes('।') ||
+            current.followingChars.includes(',') ||
+            current.followingChars.includes(';') ||
+            current.followingChars.includes('?') ||
+            current.followingChars.includes('!') ||
+            current.followingChars.includes('—') ||
+            next === undefined);
+
+      const isFollowedByNumericContext =
+        BANGLA_ADDRESS_MARKERS.has(nextWord) ||
+        BANGLA_AGE_OR_YEAR_MARKERS.has(nextWord) ||
+        BANGLA_MEASUREMENT_OR_TIME_UNITS.has(nextWord) ||
+        nextWord === 'শত' ||
+        nextWord === 'হাজার';
+
+      if (!isFollowedByNumericContext) {
+        if (
+          isFollowedByClauseBoundary ||
+          BANGLA_NEGATIVE_COPULA_PRECEDERS.has(prevWord)
+        ) {
+          idx++;
+          continue;
+        }
+      }
+    }
+
+    // 3. Filter out bare "দু" when not followed by a unit/classifier
+    if (!parsed.isDigit && parsed.stemText === 'দু' && parsed.suffix === '') {
+      const nextWord = next?.word ?? '';
+      const isFollowedByUnit =
+        BANGLA_ADDRESS_MARKERS.has(nextWord) ||
+        BANGLA_AGE_OR_YEAR_MARKERS.has(nextWord) ||
+        BANGLA_MEASUREMENT_OR_TIME_UNITS.has(nextWord) ||
+        nextWord === 'শত' ||
+        nextWord === 'হাজার';
+      if (!isFollowedByUnit) {
+        idx++;
+        continue;
+      }
+    }
+
+    // 4. Combine multiplier compounds like "এক শত" (100), "দুই শত" (200), "এক হাজার" (1000)
+    if (
+      parsed.value >= 1 &&
+      parsed.value <= 9 &&
+      parsed.suffix === '' &&
+      next &&
+      /^[\s-]*$/.test(normalizedText.slice(current.end, next.start))
+    ) {
+      const nextParsed = normalizeBanglaNumberToken(next.word);
+      if (
+        nextParsed &&
+        (nextParsed.value === 100 || nextParsed.value === 1000)
+      ) {
+        const combinedVal = parsed.value * nextParsed.value;
+        const afterNext =
+          idx + 2 < rawWords.length ? rawWords[idx + 2] : undefined;
+        let contextKind: NumericalFactKind = nextParsed.isOrdinal
+          ? 'ordinal'
+          : 'cardinal';
+        let endOffset = next.end;
+        if (
+          afterNext &&
+          /^[\s-]*$/.test(normalizedText.slice(next.end, afterNext.start))
+        ) {
+          if (BANGLA_ADDRESS_MARKERS.has(afterNext.word)) {
+            contextKind = 'address';
+            endOffset = afterNext.end;
+            idx += 3;
+          } else if (BANGLA_AGE_OR_YEAR_MARKERS.has(afterNext.word)) {
+            contextKind = 'age';
+            endOffset = afterNext.end;
+            idx += 3;
+          } else {
+            idx += 2;
+          }
+        } else {
+          idx += 2;
+        }
+
+        tokens.push({
+          rawText: normalizedText.slice(current.start, endOffset),
+          stemText: `${parsed.stemText} ${nextParsed.stemText}`,
+          suffix: nextParsed.suffix,
+          value: combinedVal,
+          isOrdinal: nextParsed.isOrdinal || contextKind === 'address',
+          isDigit: parsed.isDigit || nextParsed.isDigit,
+          contextKind,
+          start: current.start,
+          end: endOffset,
+        });
+        continue;
+      }
+    }
+
+    // 5. Inspect immediately following word for address ("নম্বর"/"নং") or age ("বছর"/"বয়স") context
+    let contextKind: NumericalFactKind = parsed.isOrdinal
+      ? 'ordinal'
+      : DEFINITE_CLASSIFIER_SUFFIXES.has(parsed.suffix)
+        ? 'quantity'
+        : 'cardinal';
+    let tokenEnd = current.end;
+    let isOrdinal = parsed.isOrdinal;
+
+    if (
+      next &&
+      /^[\s-]*$/.test(normalizedText.slice(current.end, next.start))
+    ) {
+      if (BANGLA_ADDRESS_MARKERS.has(next.word)) {
+        contextKind = 'address';
+        isOrdinal = true;
+        tokenEnd = next.end;
+        idx += 2;
+        tokens.push({
+          rawText: normalizedText.slice(current.start, tokenEnd),
+          stemText: parsed.stemText,
+          suffix: parsed.suffix,
+          value: parsed.value,
+          isOrdinal,
+          isDigit: parsed.isDigit,
+          contextKind,
+          start: current.start,
+          end: tokenEnd,
+        });
+        continue;
+      }
+
+      if (BANGLA_AGE_OR_YEAR_MARKERS.has(next.word)) {
+        contextKind = 'age';
+        tokenEnd = next.end;
+        idx += 2;
+        tokens.push({
+          rawText: normalizedText.slice(current.start, tokenEnd),
+          stemText: parsed.stemText,
+          suffix: parsed.suffix,
+          value: parsed.value,
+          isOrdinal,
+          isDigit: parsed.isDigit,
+          contextKind,
+          start: current.start,
+          end: tokenEnd,
+        });
+        continue;
+      }
+
+      if (BANGLA_DATE_OR_ORDINAL_MARKERS.has(next.word)) {
+        contextKind = 'ordinal';
+        isOrdinal = true;
+        tokenEnd = next.end;
+        idx += 2;
+        tokens.push({
+          rawText: normalizedText.slice(current.start, tokenEnd),
+          stemText: parsed.stemText,
+          suffix: parsed.suffix,
+          value: parsed.value,
+          isOrdinal,
+          isDigit: parsed.isDigit,
+          contextKind,
+          start: current.start,
+          end: tokenEnd,
+        });
+        continue;
+      }
+
+      if (contextKind === 'cardinal' && BANGLA_MEASUREMENT_OR_TIME_UNITS.has(next.word)) {
+        contextKind = 'quantity';
+      }
+    }
+
+    tokens.push({
+      rawText: normalizedText.slice(current.start, tokenEnd),
+      stemText: parsed.stemText,
+      suffix: parsed.suffix,
+      value: parsed.value,
+      isOrdinal,
+      isDigit: parsed.isDigit,
+      contextKind,
+      start: current.start,
+      end: tokenEnd,
+    });
+    idx++;
+  }
+
+  return tokens;
+}
+
+const ENGLISH_ADDRESS_PREFIX_WORDS = new Set([
+  'number',
+  'no',
+  'no.',
+  'room',
+  'house',
+  'flat',
+  'apartment',
+  'ward',
+  'platform',
+  'gate',
+  'dock',
+  'pier',
+  'berth',
+]);
+
+const ENGLISH_NON_NOUN_FOLLOWERS = new Set([
+  'and',
+  'or',
+  'but',
+  'nor',
+  'so',
+  'yet',
+  'for',
+  'of',
+  'in',
+  'on',
+  'at',
+  'to',
+  'from',
+  'by',
+  'with',
+  'without',
+  'into',
+  'onto',
+  'upon',
+  'over',
+  'under',
+  'above',
+  'below',
+  'between',
+  'among',
+  'through',
+  'during',
+  'before',
+  'after',
+  'since',
+  'until',
+  'while',
+  'where',
+  'when',
+  'who',
+  'whom',
+  'whose',
+  'which',
+  'that',
+  'this',
+  'these',
+  'those',
+  'is',
+  'was',
+  'were',
+  'are',
+  'be',
+  'been',
+  'being',
+  'had',
+  'has',
+  'have',
+  'did',
+  'do',
+  'does',
+  'would',
+  'could',
+  'should',
+  'might',
+  'must',
+  'can',
+  'will',
+  'shall',
+  'may',
+  'not',
+  'never',
+  'always',
+  'often',
+  'still',
+  'already',
+  'even',
+  'only',
+  'just',
+  'very',
+  'too',
+  'as',
+  'than',
+  'if',
+  'though',
+  'although',
+  'because',
+  'unless',
+  'he',
+  'she',
+  'it',
+  'they',
+  'we',
+  'you',
+  'i',
+  'him',
+  'her',
+  'them',
+  'us',
+  'his',
+  'their',
+  'our',
+  'your',
+  'my',
+  'the',
+  'a',
+  'an',
+]);
+
+const ENGLISH_IDIOM_PATTERNS: ReadonlyArray<RegExp> = [
+  /\b(?:no|some|any|every)\s+one\b/gi,
+  /\bone\s+(?:another|by\s+one|of\s+the|of\s+them|of\s+his|of\s+her|of\s+their|of\s+our|of\s+us|of\s+you|of\s+these|of\s+those|or\s+two|day|morning|evening|night|afternoon|winter|summer|spring|autumn|moment|instant|thing|way|side|hand)\b/gi,
+  /\b(?:this|that|which|another|each|either|neither|only|certain)\s+one\b/gi,
+  /\bthe\s+one\s+(?:who|that|which|with|in|on|at|by|from)\b/gi,
+  /\b(?:two|three|four|five|six)\s+or\s+(?:three|four|five|six|seven|eight)\b/gi,
+  /\bat\s+sixes\s+and\s+sevens\b/gi,
+  /\bon\s+cloud\s+nine\b/gi,
+  /\bdressed\s+to\s+the\s+nines\b/gi,
+  /\bnine\s+(?:lives|times\s+out\s+of\s+ten)\b/gi,
+  /\bten\s+to\s+one\b/gi,
+  /\bninety[-\s]nine\s+times\s+out\s+of\s+a\s+hundred\b/gi,
+  /\b(?:a|one)\s+(?:hundred|thousand|million)\s+times\b/gi,
+  /\b(?:hundreds|thousands|millions|dozens)\s+of\b/gi,
+  /\b(?:a\s+couple(?:\s+of)?|a\s+few)\b/gi,
+  /\b(?:in\s+two\s+minds|two\s+cents|two[-\s]faced|two\s+by\s+two|all\s+in\s+one|on\s+all\s+fours)\b/gi,
+  /\b(?:a|an)\s+[a-z]+\s+or\s+two\b/gi,
+  /\b(?:first|second)\s+[-\s]?(?:hand|nature|wind|thought|thoughts|sight|rate|class|string|cousin|childhood)\b/gi,
+  /\b(?:sixth\s+sense|seventh\s+heaven|third\s+degree|eleventh\s+hour|four\s+corners|three\s+cheers|twenty[-\s]four\s+seven|24\/7)\b/gi,
+  /\b(?:wait|just|for|in|after|within|split|every|another|one|a)\s+(?:a\s+|one\s+|split\s+)?seconds?\b/gi,
+  /\b(?:quarter|half)\s+(?:of\s+an\s+hour|an\s+hour|past|to)\b/gi,
+  /\b\w+[-\s]odd\b/gi,
+];
+
+function parseSingleOrCompoundEnglishNumberTokens(
+  tokens: ReadonlyArray<{ text: string; lower: string; start: number; end: number }>,
+  startIdx: number,
+  sourceText: string
+): {
+  value: number;
+  isOrdinal: boolean;
+  consumedTokenCount: number;
+  start: number;
+  end: number;
+  numberText: string;
+} | null {
+  const first = tokens[startIdx];
+  if (!first) return null;
+
+  const w1 = first.lower;
+
+  // 1. Check Arabic digits (cardinal or ordinal: "88", "88th", "11", "9th")
+  const digitOrdMatch = /^(\d+)(st|nd|rd|th)?$/i.exec(w1);
+  if (digitOrdMatch) {
+    const val = Number.parseInt(digitOrdMatch[1], 10);
+    if (!Number.isFinite(val) || val < 0) return null;
+    return {
+      value: val,
+      isOrdinal: Boolean(digitOrdMatch[2]),
+      consumedTokenCount: 1,
+      start: first.start,
+      end: first.end,
+      numberText: first.text,
+    };
+  }
+
+  // 2. Check hyphenated compound inside a single token (e.g. "eighty-eight", "eighty-seven", "twenty-seven", "eighty-eighth", "eighty-eight-year-old")
+  if (w1.includes('-')) {
+    const parts = w1.split('-');
+    if (parts.length >= 2) {
+      const p0 = parts[0];
+      const p1 = parts[1];
+      const tensVal = ENGLISH_CARDINAL_TENS[p0];
+      if (tensVal !== undefined) {
+        if (ENGLISH_CARDINAL_UNITS[p1] !== undefined && ENGLISH_CARDINAL_UNITS[p1] >= 1 && ENGLISH_CARDINAL_UNITS[p1] <= 9) {
+          const val = tensVal + ENGLISH_CARDINAL_UNITS[p1];
+          // If hyphenated with "-year-old" or "-years-old", slice only the number part so caller sees "years"
+          const numPartText = `${first.text.split('-')[0]}-${first.text.split('-')[1]}`;
+          const numEnd = first.start + numPartText.length;
+          return {
+            value: val,
+            isOrdinal: false,
+            consumedTokenCount: 1,
+            start: first.start,
+            end: numEnd,
+            numberText: sourceText.slice(first.start, numEnd),
+          };
+        }
+        if (ENGLISH_ORDINAL_UNITS[p1] !== undefined && ENGLISH_ORDINAL_UNITS[p1] >= 1 && ENGLISH_ORDINAL_UNITS[p1] <= 9) {
+          const val = tensVal + ENGLISH_ORDINAL_UNITS[p1];
+          const numPartText = `${first.text.split('-')[0]}-${first.text.split('-')[1]}`;
+          const numEnd = first.start + numPartText.length;
+          return {
+            value: val,
+            isOrdinal: true,
+            consumedTokenCount: 1,
+            start: first.start,
+            end: numEnd,
+            numberText: sourceText.slice(first.start, numEnd),
+          };
+        }
+      }
+    }
+  }
+
+  // 3. Check space-separated compound tens + unit (e.g. "eighty eight", "eighty eighth", "twenty seven")
+  if (ENGLISH_CARDINAL_TENS[w1] !== undefined) {
+    const tensVal = ENGLISH_CARDINAL_TENS[w1];
+    const second = tokens[startIdx + 1];
+    if (
+      second &&
+      /^\s+$/.test(sourceText.slice(first.end, second.start))
+    ) {
+      const w2 = second.lower;
+      if (ENGLISH_CARDINAL_UNITS[w2] !== undefined && ENGLISH_CARDINAL_UNITS[w2] >= 1 && ENGLISH_CARDINAL_UNITS[w2] <= 9) {
+        return {
+          value: tensVal + ENGLISH_CARDINAL_UNITS[w2],
+          isOrdinal: false,
+          consumedTokenCount: 2,
+          start: first.start,
+          end: second.end,
+          numberText: sourceText.slice(first.start, second.end),
+        };
+      }
+      if (ENGLISH_ORDINAL_UNITS[w2] !== undefined && ENGLISH_ORDINAL_UNITS[w2] >= 1 && ENGLISH_ORDINAL_UNITS[w2] <= 9) {
+        return {
+          value: tensVal + ENGLISH_ORDINAL_UNITS[w2],
+          isOrdinal: true,
+          consumedTokenCount: 2,
+          start: first.start,
+          end: second.end,
+          numberText: sourceText.slice(first.start, second.end),
+        };
+      }
+    }
+
+    return {
+      value: tensVal,
+      isOrdinal: false,
+      consumedTokenCount: 1,
+      start: first.start,
+      end: first.end,
+      numberText: first.text,
+    };
+  }
+
+  // 4. Check unit + hundred/thousand (e.g., "one hundred", "two hundred", "one thousand")
+  if (ENGLISH_CARDINAL_UNITS[w1] !== undefined) {
+    const unitVal = ENGLISH_CARDINAL_UNITS[w1];
+    const second = tokens[startIdx + 1];
+    if (
+      unitVal >= 1 &&
+      unitVal <= 9 &&
+      second &&
+      /^\s+$/.test(sourceText.slice(first.end, second.start)) &&
+      (second.lower === 'hundred' || second.lower === 'thousand')
+    ) {
+      const mult = second.lower === 'hundred' ? 100 : 1000;
+      return {
+        value: unitVal * mult,
+        isOrdinal: false,
+        consumedTokenCount: 2,
+        start: first.start,
+        end: second.end,
+        numberText: sourceText.slice(first.start, second.end),
+      };
+    }
+
+    return {
+      value: unitVal,
+      isOrdinal: false,
+      consumedTokenCount: 1,
+      start: first.start,
+      end: first.end,
+      numberText: first.text,
+    };
+  }
+
+  // 5. Check single-word ordinals ("first" .. "nineteenth", "twentieth" .. "hundredth")
+  if (ENGLISH_ORDINAL_UNITS[w1] !== undefined) {
+    return {
+      value: ENGLISH_ORDINAL_UNITS[w1],
+      isOrdinal: true,
+      consumedTokenCount: 1,
+      start: first.start,
+      end: first.end,
+      numberText: first.text,
+    };
+  }
+  if (ENGLISH_ORDINAL_TENS[w1] !== undefined) {
+    return {
+      value: ENGLISH_ORDINAL_TENS[w1],
+      isOrdinal: true,
+      consumedTokenCount: 1,
+      start: first.start,
+      end: first.end,
+      numberText: first.text,
+    };
+  }
+
+  // 6. Standalone "hundred" or "thousand" when preceded by "a" ("a hundred notes")
+  if (w1 === 'hundred' || w1 === 'thousand') {
+    return {
+      value: w1 === 'hundred' ? 100 : 1000,
+      isOrdinal: false,
+      consumedTokenCount: 1,
+      start: first.start,
+      end: first.end,
+      numberText: first.text,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Conservatively extracts explicit, comparable numerical facts from an English paragraph,
+ * classifying each as `'address'`, `'age'`, `'ordinal'`, `'quantity'`, or `'cardinal'`,
+ * while excluding idiomatic, figurative, indefinite, and non-numerical homograph uses.
+ */
+export function parseEnglishNumericalExpressions(
+  englishText: string
+): EnglishNumericalFact[] {
+  const source = normalizeEnglishTerm(englishText ?? '');
+  if (!source) return [];
+
+  // 1. Identify excluded idiomatic/non-numerical character spans
+  const excludedSpans: Array<{ start: number; end: number }> = [];
+  for (const pattern of ENGLISH_IDIOM_PATTERNS) {
+    pattern.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = pattern.exec(source)) !== null) {
+      excludedSpans.push({
+        start: m.index,
+        end: m.index + m[0].length,
+      });
+    }
+  }
+
+  const isSpanExcluded = (start: number, end: number): boolean =>
+    excludedSpans.some((ex) => start < ex.end && end > ex.start);
+
+  // 2. Tokenize English words (preserving `.` on `No.` when followed by space + number,
+  //    and splitting hyphenated clock times / number pairs like "four-ten" or "six-thirty"
+  //    where the first part is a unit 1..12 and the second part is also a cardinal number)
+  const rawTokens: Array<{ text: string; lower: string; start: number; end: number }> = [];
+  const tokenRegex = /\b(?:No\.|[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)/g;
+  let tm: RegExpExecArray | null;
+  while ((tm = tokenRegex.exec(source)) !== null) {
+    const tokenText = tm[0];
+    const tokenLower = tokenText.toLowerCase();
+    const parts = tokenText.split('-');
+    if (parts.length === 2) {
+      const p0Lower = parts[0].toLowerCase();
+      const p1Lower = parts[1].toLowerCase();
+      const p0Unit = ENGLISH_CARDINAL_UNITS[p0Lower];
+      const p1IsNumber =
+        ENGLISH_CARDINAL_UNITS[p1Lower] !== undefined ||
+        ENGLISH_CARDINAL_TENS[p1Lower] !== undefined;
+      if (p0Unit !== undefined && p0Unit >= 1 && p0Unit <= 12 && p1IsNumber) {
+        const p0End = tm.index + parts[0].length;
+        const p1Start = p0End + 1;
+        rawTokens.push({
+          text: parts[0],
+          lower: p0Lower,
+          start: tm.index,
+          end: p0End,
+        });
+        rawTokens.push({
+          text: parts[1],
+          lower: p1Lower,
+          start: p1Start,
+          end: tm.index + tokenText.length,
+        });
+        continue;
+      }
+    }
+    rawTokens.push({
+      text: tokenText,
+      lower: tokenLower,
+      start: tm.index,
+      end: tm.index + tokenText.length,
+    });
+  }
+
+  const facts: EnglishNumericalFact[] = [];
+  let i = 0;
+
+  while (i < rawTokens.length) {
+    const tok = rawTokens[i];
+
+    // Check if current token is an address/identifier prefix ("number eleven", "No. 9", "room 11")
+    if (
+      ENGLISH_ADDRESS_PREFIX_WORDS.has(tok.lower) &&
+      i + 1 < rawTokens.length &&
+      /^\s+$/.test(source.slice(tok.end, rawTokens[i + 1].start))
+    ) {
+      const numMatch = parseSingleOrCompoundEnglishNumberTokens(
+        rawTokens,
+        i + 1,
+        source
+      );
+      if (numMatch && !isSpanExcluded(tok.start, numMatch.end)) {
+        facts.push({
+          rawText: source.slice(tok.start, numMatch.end),
+          numberText: numMatch.numberText,
+          value: numMatch.value,
+          kind: 'address',
+          isOrdinal: numMatch.isOrdinal,
+          unitOrNoun: tok.text,
+          start: tok.start,
+          end: numMatch.end,
+        });
+        i += 1 + numMatch.consumedTokenCount;
+        continue;
+      }
+    }
+
+    // Check if current token is an age prefix ("aged 88", "aged eighty-eight")
+    if (
+      (tok.lower === 'aged' || tok.lower === 'age') &&
+      i + 1 < rawTokens.length &&
+      /^\s+$/.test(source.slice(tok.end, rawTokens[i + 1].start))
+    ) {
+      const numMatch = parseSingleOrCompoundEnglishNumberTokens(
+        rawTokens,
+        i + 1,
+        source
+      );
+      if (numMatch && !isSpanExcluded(tok.start, numMatch.end)) {
+        facts.push({
+          rawText: source.slice(tok.start, numMatch.end),
+          numberText: numMatch.numberText,
+          value: numMatch.value,
+          kind: 'age',
+          isOrdinal: false,
+          unitOrNoun: tok.text,
+          start: tok.start,
+          end: numMatch.end,
+        });
+        i += 1 + numMatch.consumedTokenCount;
+        continue;
+      }
+    }
+
+    const numMatch = parseSingleOrCompoundEnglishNumberTokens(
+      rawTokens,
+      i,
+      source
+    );
+    if (!numMatch) {
+      i++;
+      continue;
+    }
+
+    if (isSpanExcluded(numMatch.start, numMatch.end)) {
+      i += numMatch.consumedTokenCount;
+      continue;
+    }
+
+    // Guard on bare "one" (value === 1, non-ordinal, not part of compound like "one hundred"):
+    // Only treat bare "one" as an explicit numerical fact when followed by "year(s) old" or "o'clock"
+    // or in an explicit paragraph label ("Paragraph one"), never as a generic determiner/pronoun ("one umbrella", "for one").
+    const nextTokenIdx = i + numMatch.consumedTokenCount;
+    const nextTok = rawTokens[nextTokenIdx];
+    const prevTok = i > 0 ? rawTokens[i - 1] : undefined;
+
+    if (
+      numMatch.value === 1 &&
+      !numMatch.isOrdinal &&
+      numMatch.numberText.toLowerCase() === 'one'
+    ) {
+      const followedByYearOldOrClock =
+        nextTok &&
+        /^[\s-]+$/.test(source.slice(numMatch.end, nextTok.start)) &&
+        (nextTok.lower === 'year' ||
+          nextTok.lower === 'years' ||
+          nextTok.lower === "o'clock");
+      const precededByLabel =
+        prevTok &&
+        /^\s+$/.test(source.slice(prevTok.end, numMatch.start)) &&
+        (prevTok.lower === 'paragraph' ||
+          prevTok.lower === 'chapter' ||
+          prevTok.lower === 'page' ||
+          prevTok.lower === 'struck');
+
+      if (!followedByYearOldOrClock && !precededByLabel) {
+        i += numMatch.consumedTokenCount;
+        continue;
+      }
+    }
+
+    // Guard on "second" used as a noun ("every second", "the last second")
+    if (numMatch.isOrdinal && numMatch.numberText.toLowerCase() === 'second') {
+      const nextIsPunctOrTime =
+        !nextTok ||
+        !/^\s+$/.test(source.slice(numMatch.end, nextTok.start)) ||
+        nextTok.lower === 'later' ||
+        nextTok.lower === 'passed' ||
+        nextTok.lower === 'ago' ||
+        nextTok.lower === 'before' ||
+        nextTok.lower === 'after';
+      const prevIsTimeDeterminer =
+        prevTok &&
+        /^\s+$/.test(source.slice(prevTok.end, numMatch.start)) &&
+        (prevTok.lower === 'last' ||
+          prevTok.lower === 'final' ||
+          prevTok.lower === 'next' ||
+          prevTok.lower === 'very' ||
+          prevTok.lower === 'half');
+      if (nextIsPunctOrTime && prevIsTimeDeterminer) {
+        i += numMatch.consumedTokenCount;
+        continue;
+      }
+    }
+
+    // Check if hyphenated token itself had "-year-old" or "-years-old" suffix (e.g. "eighty-eight-year-old")
+    if (
+      tok.lower.endsWith('-year-old') ||
+      tok.lower.endsWith('-years-old')
+    ) {
+      facts.push({
+        rawText: tok.text,
+        numberText: numMatch.numberText,
+        value: numMatch.value,
+        kind: 'age',
+        isOrdinal: false,
+        unitOrNoun: 'year-old',
+        start: tok.start,
+        end: tok.end,
+      });
+      i += numMatch.consumedTokenCount;
+      continue;
+    }
+
+    // Check following token(s) for "years [old]" -> kind: 'age'
+    if (
+      nextTok &&
+      /^[\s-]+$/.test(source.slice(numMatch.end, nextTok.start)) &&
+      (nextTok.lower === 'year' ||
+        nextTok.lower === 'years' ||
+        nextTok.lower === 'year-old' ||
+        nextTok.lower === 'years-old')
+    ) {
+      const afterYears = rawTokens[nextTokenIdx + 1];
+      const hasOld =
+        afterYears &&
+        /^\s+$/.test(source.slice(nextTok.end, afterYears.start)) &&
+        afterYears.lower === 'old';
+      const endPos = hasOld ? afterYears.end : nextTok.end;
+      const unitStr = hasOld ? `${nextTok.text} ${afterYears.text}` : nextTok.text;
+
+      facts.push({
+        rawText: source.slice(numMatch.start, endPos),
+        numberText: numMatch.numberText,
+        value: numMatch.value,
+        kind: 'age',
+        isOrdinal: false,
+        unitOrNoun: unitStr,
+        start: numMatch.start,
+        end: endPos,
+      });
+      i = nextTokenIdx + (hasOld ? 2 : 1);
+      continue;
+    }
+
+    // If ordinal ("ninth", "eleventh", "eighty-eighth", "14th")
+    if (numMatch.isOrdinal) {
+      facts.push({
+        rawText: numMatch.numberText,
+        numberText: numMatch.numberText,
+        value: numMatch.value,
+        kind: 'ordinal',
+        isOrdinal: true,
+        start: numMatch.start,
+        end: numMatch.end,
+      });
+      i += numMatch.consumedTokenCount;
+      continue;
+    }
+
+    // Check if followed by a counted noun ("eighty-seven notes", "eleven houses")
+    if (
+      nextTok &&
+      /^\s+$/.test(source.slice(numMatch.end, nextTok.start)) &&
+      /^[a-z]+$/i.test(nextTok.text) &&
+      !ENGLISH_NON_NOUN_FOLLOWERS.has(nextTok.lower) &&
+      ENGLISH_CARDINAL_UNITS[nextTok.lower] === undefined &&
+      ENGLISH_CARDINAL_TENS[nextTok.lower] === undefined &&
+      ENGLISH_ORDINAL_UNITS[nextTok.lower] === undefined &&
+      ENGLISH_ORDINAL_TENS[nextTok.lower] === undefined
+    ) {
+      facts.push({
+        rawText: source.slice(numMatch.start, nextTok.end),
+        numberText: numMatch.numberText,
+        value: numMatch.value,
+        kind: 'quantity',
+        isOrdinal: false,
+        unitOrNoun: nextTok.text,
+        start: numMatch.start,
+        end: nextTok.end,
+      });
+      i = nextTokenIdx + 1;
+      continue;
+    }
+
+    // Standalone cardinal number
+    facts.push({
+      rawText: numMatch.numberText,
+      numberText: numMatch.numberText,
+      value: numMatch.value,
+      kind: 'cardinal',
+      isOrdinal: false,
+      start: numMatch.start,
+      end: numMatch.end,
+    });
+    i += numMatch.consumedTokenCount;
+  }
+
+  return facts;
+}
+
+/**
+ * Computes a deterministic identity signature for a numerical verification finding.
+ * Prefixed with `deterministic_lint::numerical::` so it is clearly distinguished from
+ * glossary terminology findings (`deterministic_lint::<termId>::...`) and AI Stage 5 issues.
+ */
+export function computeNumericalFindingSignature(
+  finding: Pick<
+    NumericalVerificationFinding,
+    'kind' | 'expectedValue' | 'detectedValue' | 'expectedBangla' | 'detectedBanglaText'
+  >
+): string {
+  const expectedBn = normalizeBanglaUnicode(finding.expectedBangla ?? '');
+  const detectedBn = normalizeBanglaUnicode(finding.detectedBanglaText ?? '');
+  return `deterministic_lint::numerical::${finding.kind}::${finding.expectedValue}::${finding.detectedValue ?? 'none'}::${expectedBn}::${detectedBn}`;
+}
+
+/**
+ * Converts a confirmed `NumericalVerificationFinding` into a standard `VerificationIssue`
+ * compatible with Stage 5 verification reports.
+ * Uses `source: 'deterministic_lint'`, `type: 'changed_meaning'`, and `termId: 'numerical:<kind>:<expectedValue>'`
+ * so numerical findings are cleanly distinguished from glossary `terminology` issues without altering `lib/types.ts`.
+ * `suggestedFix` is always `undefined` so translations are never automatically overwritten.
+ */
+export function numericalFindingToVerificationIssue(
+  finding: NumericalVerificationFinding
+): VerificationIssue {
+  const guidanceSuffix =
+    finding.editorialGuidance && !finding.description.includes(finding.editorialGuidance)
+      ? ` ${finding.editorialGuidance}`
+      : '';
+
+  return {
+    id: finding.id,
+    severity: finding.severity,
+    type: 'changed_meaning',
+    paragraphIndex: finding.paragraphIndex,
+    description: `${finding.description}${guidanceSuffix}`,
+    englishExcerpt: finding.englishExcerpt,
+    banglaExcerpt: finding.banglaExcerpt,
+    suggestedFix: undefined,
+    resolved: false,
+    source: 'deterministic_lint',
+    termId: `numerical:${finding.kind}:${finding.expectedValue}`,
+    expectedBangla: finding.expectedBangla,
+    ...(finding.detectedBanglaText
+      ? { detectedBanglaVariant: finding.detectedBanglaText }
+      : {}),
+    findingSignature: finding.findingSignature,
+  };
+}
+
+/**
+ * Deterministically compares explicit numerical facts in a single aligned English/Bangla `ParagraphPair`.
+ * Classifies each comparison into:
+ * - `'no_mismatch'`: The expected number (in Bangla word, ordinal, classifier, or digit form) is present.
+ * - `'confirmed_mismatch'`: The expected number is absent and a conflicting Bangla number is unambiguously paired.
+ * - `'missing_number'`: The expected number is absent and no conflicting Bangla number is present.
+ * - `'ambiguous'`: Multiple unmatched numbers exist without a unique contextual pairing.
+ *
+ * Only `'confirmed_mismatch'` findings are placed in `confirmedMismatches` (and `findings`) to generate
+ * deterministic Stage 5 issues.
+ */
+export function lintParagraphNumericalConsistency(
+  paragraph:
+    | ParagraphPair
+    | {
+        index?: number;
+        paragraphIndex?: number;
+        englishText: string;
+        banglaText: string;
+        missingTranslation?: boolean;
+      }
+): ParagraphNumericalLintResult {
+  const pIndex =
+    typeof (paragraph as ParagraphPair).index === 'number'
+      ? (paragraph as ParagraphPair).index
+      : typeof (paragraph as { paragraphIndex?: number }).paragraphIndex ===
+          'number'
+        ? (paragraph as { paragraphIndex: number }).paragraphIndex
+        : 0;
+  const englishText = paragraph.englishText ?? '';
+  const banglaText = normalizeBanglaUnicode(paragraph.banglaText ?? '');
+
+  if (!englishText.trim() || !banglaText || paragraph.missingTranslation) {
+    return {
+      paragraphIndex: pIndex,
+      englishFacts: [],
+      banglaTokens: [],
+      comparisons: [],
+      findings: [],
+      confirmedMismatches: [],
+      missingNumbers: [],
+      ambiguousComparisons: [],
+      matchedComparisons: [],
+      issues: [],
+    };
+  }
+
+  const englishFacts = parseEnglishNumericalExpressions(englishText);
+  const banglaTokens = parseBanglaNumericalTokens(banglaText);
+
+  // Check explicit fractional half-unit expressions ("half a step" -> "আধ পা" vs "এক পা",
+  // "half an inch" -> "আধ ইঞ্চি" vs "এক ইঞ্চি") before returning early when englishFacts is empty.
+  const halfUnitChecks: Array<{
+    enRegex: RegExp;
+    wrongBnRegex: RegExp;
+    validHalfBnRegex: RegExp;
+    expectedBn: string;
+    acceptedBn: string[];
+  }> = [
+    {
+      enRegex: /\bhalf\s+a\s+step\b/i,
+      wrongBnRegex: /(?:^|[^\u0980-\u09FF])(এক\s+পা)(?:$|[^\u0980-\u09FF])/u,
+      validHalfBnRegex: /(?:আধ|আধা|অর্ধেক)\s*পা/u,
+      expectedBn: 'আধ পা',
+      acceptedBn: ['আধা পা', 'অর্ধেক পা'],
+    },
+    {
+      enRegex: /\bhalf\s+an\s+inch\b/i,
+      wrongBnRegex: /(?:^|[^\u0980-\u09FF])(এক\s+ইঞ্চি)(?:$|[^\u0980-\u09FF])/u,
+      validHalfBnRegex: /(?:আধ|আধা|অর্ধেক)\s*ইঞ্চি/u,
+      expectedBn: 'আধ ইঞ্চি',
+      acceptedBn: ['আধা ইঞ্চি', 'অর্ধেক ইঞ্চি'],
+    },
+  ];
+
+  const halfUnitMismatches: NumericalVerificationFinding[] = [];
+  for (const check of halfUnitChecks) {
+    const enMatch = check.enRegex.exec(englishText);
+    if (enMatch && !check.validHalfBnRegex.test(banglaText)) {
+      const wrongBnMatch = check.wrongBnRegex.exec(banglaText);
+      if (wrongBnMatch) {
+        const detectedBn = wrongBnMatch[1];
+        const matchedEn = enMatch[0];
+        const editorialGuidance = `Replace "${detectedBn}" (1) with "${check.expectedBn}" (0.5) to match "${matchedEn}".`;
+        halfUnitMismatches.push({
+          id: `num-lint-p${pIndex}-half-to-one-${halfUnitMismatches.length}`,
+          paragraphIndex: pIndex,
+          displayParagraphNumber: pIndex + 1,
+          status: 'confirmed_mismatch',
+          kind: 'quantity',
+          expectedValue: 0.5,
+          detectedValue: 1,
+          matchedEnglishText: matchedEn,
+          expectedBangla: check.expectedBn,
+          acceptedBanglaForms: check.acceptedBn,
+          detectedBanglaText: detectedBn,
+          severity: 'high',
+          englishExcerpt: buildExcerpt(englishText),
+          banglaExcerpt: buildExcerpt(banglaText),
+          description: `[Numerical Mismatch] Paragraph ${pIndex + 1} translates "${matchedEn}" (0.5) as "${detectedBn}" (1) instead of expected "${check.expectedBn}" (0.5).`,
+          editorialGuidance,
+          suggestedFix: undefined,
+          findingSignature: computeNumericalFindingSignature({
+            kind: 'quantity',
+            expectedValue: 0.5,
+            detectedValue: 1,
+            expectedBangla: check.expectedBn,
+            detectedBanglaText: detectedBn,
+          }),
+        });
+      }
+    }
+  }
+
+  if (englishFacts.length === 0) {
+    return {
+      paragraphIndex: pIndex,
+      englishFacts,
+      banglaTokens,
+      comparisons: [...halfUnitMismatches],
+      findings: [...halfUnitMismatches],
+      confirmedMismatches: [...halfUnitMismatches],
+      missingNumbers: [],
+      ambiguousComparisons: [],
+      matchedComparisons: [],
+      issues: halfUnitMismatches.map(numericalFindingToVerificationIssue),
+    };
+  }
+
+  const consumedBanglaIndices = new Set<number>();
+  const matchedFactIndices = new Set<number>();
+  const comparisonsByFactIdx = new Map<number, NumericalVerificationFinding>();
+
+  // PASS 1: Match English numerical facts whose exact numeric value is present in `banglaTokens`
+  for (let fIdx = 0; fIdx < englishFacts.length; fIdx++) {
+    const fact = englishFacts[fIdx];
+
+    // Prefer a Bangla token with matching value AND compatible contextKind, otherwise any unconsumed token with matching value
+    let bestBnIdx = -1;
+    for (let bIdx = 0; bIdx < banglaTokens.length; bIdx++) {
+      if (consumedBanglaIndices.has(bIdx)) continue;
+      const bnTok = banglaTokens[bIdx];
+      if (bnTok.value === fact.value) {
+        if (bnTok.contextKind === fact.kind) {
+          bestBnIdx = bIdx;
+          break;
+        }
+        if (bestBnIdx === -1) {
+          bestBnIdx = bIdx;
+        }
+      }
+    }
+
+    if (bestBnIdx !== -1) {
+      consumedBanglaIndices.add(bestBnIdx);
+      matchedFactIndices.add(fIdx);
+      const matchedBn = banglaTokens[bestBnIdx];
+      const canonical = getCanonicalBanglaNumberForms(fact.value, fact.kind);
+      const finding: NumericalVerificationFinding = {
+        id: `num-match-p${pIndex}-f${fIdx}-v${fact.value}`,
+        paragraphIndex: pIndex,
+        displayParagraphNumber: pIndex + 1,
+        status: 'no_mismatch',
+        kind: fact.kind,
+        expectedValue: fact.value,
+        detectedValue: matchedBn.value,
+        matchedEnglishText: fact.rawText,
+        expectedBangla: canonical.primary,
+        acceptedBanglaForms: canonical.alternatives,
+        detectedBanglaText: matchedBn.rawText,
+        severity: 'low',
+        englishExcerpt: buildExcerpt(englishText),
+        banglaExcerpt: buildExcerpt(banglaText),
+        description: `Paragraph ${pIndex + 1} accurately renders "${fact.rawText}" (${fact.value}) as "${matchedBn.rawText}".`,
+        suggestedFix: undefined,
+        findingSignature: computeNumericalFindingSignature({
+          kind: fact.kind,
+          expectedValue: fact.value,
+          detectedValue: matchedBn.value,
+          expectedBangla: canonical.primary,
+          detectedBanglaText: matchedBn.rawText,
+        }),
+      };
+      comparisonsByFactIdx.set(fIdx, finding);
+    }
+  }
+
+  // Filter unconsumed Bangla tokens that can act as genuine conflicting numbers:
+  // 1. Exclude benign indefinite-article "এক"/"একটি"/"একটা"/"একজন" (value === 1) when not in an address ("এক নম্বর")
+  //    or age ("এক বছর") construction, since English "a"/"an" routinely translates to "একটি"/"একটা"/"একজন".
+  // 2. Exclude Bangla "বারোটা"/"বারোটার"/"বারোটাই" (value === 12) when preceded by "দুপুর" and the English source
+  //    contains "noon" or "midday", since "দুপুর বারোটা" is the idiomatic Bangla rendering of "noon".
+  const englishHasNoonOrMidday = /\b(?:noon|midday)\b/i.test(englishText);
+  const candidateConflictingBnIndices = banglaTokens
+    .map((_, idx) => idx)
+    .filter((bIdx) => {
+      if (consumedBanglaIndices.has(bIdx)) return false;
+      const tok = banglaTokens[bIdx];
+      if (
+        tok.value === 1 &&
+        !tok.isDigit &&
+        tok.contextKind !== 'address' &&
+        tok.contextKind !== 'age' &&
+        !tok.isOrdinal
+      ) {
+        return false;
+      }
+      if (englishHasNoonOrMidday && tok.value === 12) {
+        const prefixSlice = banglaText.slice(Math.max(0, tok.start - 12), tok.start);
+        if (/দুপুর\s*$/u.test(prefixSlice)) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+  const unmatchedFactIndices = englishFacts
+    .map((_, idx) => idx)
+    .filter((fIdx) => !matchedFactIndices.has(fIdx));
+
+  // PASS 2A: Pair unmatched English facts with unconsumed Bangla tokens sharing the exact same specific context (`address`, `age`, `ordinal`)
+  for (const fIdx of unmatchedFactIndices) {
+    if (comparisonsByFactIdx.has(fIdx)) continue;
+    const fact = englishFacts[fIdx];
+    if (fact.kind !== 'address' && fact.kind !== 'age' && fact.kind !== 'ordinal') {
+      continue;
+    }
+
+    const matchingContextBnIndices = candidateConflictingBnIndices.filter((bIdx) => {
+      if (consumedBanglaIndices.has(bIdx)) return false;
+      const bnTok = banglaTokens[bIdx];
+      if (fact.kind === 'address') return bnTok.contextKind === 'address';
+      if (fact.kind === 'age') return bnTok.contextKind === 'age';
+      if (fact.kind === 'ordinal') return bnTok.isOrdinal;
+      return false;
+    });
+
+    const sameKindUnmatchedFacts = unmatchedFactIndices.filter(
+      (otherIdx) => !comparisonsByFactIdx.has(otherIdx) && englishFacts[otherIdx].kind === fact.kind
+    );
+
+    if (matchingContextBnIndices.length === 1 && sameKindUnmatchedFacts.length === 1) {
+      const bIdx = matchingContextBnIndices[0];
+      consumedBanglaIndices.add(bIdx);
+      const conflictBn = banglaTokens[bIdx];
+      const canonical = getCanonicalBanglaNumberForms(fact.value, fact.kind);
+      const altHint =
+        canonical.alternatives.length > 0
+          ? ` (or ${canonical.alternatives.slice(0, 2).join(' / ')})`
+          : '';
+      const editorialGuidance = `Replace "${conflictBn.rawText}" (${conflictBn.value}) with "${canonical.primary}"${altHint} (${fact.value}) to match "${fact.rawText}".`;
+      const finding: NumericalVerificationFinding = {
+        id: `num-lint-p${pIndex}-f${fIdx}-v${fact.value}-to-v${conflictBn.value}`,
+        paragraphIndex: pIndex,
+        displayParagraphNumber: pIndex + 1,
+        status: 'confirmed_mismatch',
+        kind: fact.kind,
+        expectedValue: fact.value,
+        detectedValue: conflictBn.value,
+        matchedEnglishText: fact.rawText,
+        expectedBangla: canonical.primary,
+        acceptedBanglaForms: canonical.alternatives,
+        detectedBanglaText: conflictBn.rawText,
+        severity: 'high',
+        englishExcerpt: buildExcerpt(englishText),
+        banglaExcerpt: buildExcerpt(banglaText),
+        description: `[Numerical Mismatch] Paragraph ${pIndex + 1} translates "${fact.rawText}" (${fact.value}) as "${conflictBn.rawText}" (${conflictBn.value}) instead of expected Bangla number "${canonical.primary}" (${fact.value}).`,
+        editorialGuidance,
+        suggestedFix: undefined,
+        findingSignature: computeNumericalFindingSignature({
+          kind: fact.kind,
+          expectedValue: fact.value,
+          detectedValue: conflictBn.value,
+          expectedBangla: canonical.primary,
+          detectedBanglaText: conflictBn.rawText,
+        }),
+      };
+      comparisonsByFactIdx.set(fIdx, finding);
+    }
+  }
+
+  // PASS 2B: Evaluate remaining unmatched English facts
+  const remainingUnmatchedFactIndices = unmatchedFactIndices.filter(
+    (fIdx) => !comparisonsByFactIdx.has(fIdx)
+  );
+  const remainingConflictBnIndices = candidateConflictingBnIndices.filter(
+    (bIdx) => !consumedBanglaIndices.has(bIdx)
+  );
+
+  if (
+    remainingUnmatchedFactIndices.length === 1 &&
+    remainingConflictBnIndices.length === 1
+  ) {
+    // Unambiguous 1-to-1 conflicting number in the aligned paragraph
+    const fIdx = remainingUnmatchedFactIndices[0];
+    const bIdx = remainingConflictBnIndices[0];
+    consumedBanglaIndices.add(bIdx);
+    const fact = englishFacts[fIdx];
+    const conflictBn = banglaTokens[bIdx];
+    const canonical = getCanonicalBanglaNumberForms(fact.value, fact.kind);
+    const altHint =
+      canonical.alternatives.length > 0
+        ? ` (or ${canonical.alternatives.slice(0, 2).join(' / ')})`
+        : '';
+    const editorialGuidance = `Replace "${conflictBn.rawText}" (${conflictBn.value}) with "${canonical.primary}"${altHint} (${fact.value}) to match "${fact.rawText}".`;
+
+    comparisonsByFactIdx.set(fIdx, {
+      id: `num-lint-p${pIndex}-f${fIdx}-v${fact.value}-to-v${conflictBn.value}`,
+      paragraphIndex: pIndex,
+      displayParagraphNumber: pIndex + 1,
+      status: 'confirmed_mismatch',
+      kind: fact.kind,
+      expectedValue: fact.value,
+      detectedValue: conflictBn.value,
+      matchedEnglishText: fact.rawText,
+      expectedBangla: canonical.primary,
+      acceptedBanglaForms: canonical.alternatives,
+      detectedBanglaText: conflictBn.rawText,
+      severity: 'high',
+      englishExcerpt: buildExcerpt(englishText),
+      banglaExcerpt: buildExcerpt(banglaText),
+      description: `[Numerical Mismatch] Paragraph ${pIndex + 1} translates "${fact.rawText}" (${fact.value}) as "${conflictBn.rawText}" (${conflictBn.value}) instead of expected Bangla number "${canonical.primary}" (${fact.value}).`,
+      editorialGuidance,
+      suggestedFix: undefined,
+      findingSignature: computeNumericalFindingSignature({
+        kind: fact.kind,
+        expectedValue: fact.value,
+        detectedValue: conflictBn.value,
+        expectedBangla: canonical.primary,
+        detectedBanglaText: conflictBn.rawText,
+      }),
+    });
+  } else {
+    for (const fIdx of remainingUnmatchedFactIndices) {
+      const fact = englishFacts[fIdx];
+      const canonical = getCanonicalBanglaNumberForms(fact.value, fact.kind);
+
+      if (remainingConflictBnIndices.length === 0) {
+        // No conflicting Bangla number exists -> missing or paraphrased number
+        comparisonsByFactIdx.set(fIdx, {
+          id: `num-missing-p${pIndex}-f${fIdx}-v${fact.value}`,
+          paragraphIndex: pIndex,
+          displayParagraphNumber: pIndex + 1,
+          status: 'missing_number',
+          kind: fact.kind,
+          expectedValue: fact.value,
+          matchedEnglishText: fact.rawText,
+          expectedBangla: canonical.primary,
+          acceptedBanglaForms: canonical.alternatives,
+          severity: 'low',
+          englishExcerpt: buildExcerpt(englishText),
+          banglaExcerpt: buildExcerpt(banglaText),
+          description: `Numerical expression "${fact.rawText}" (${fact.value}) in Paragraph ${pIndex + 1} has no explicit Bangla numerical counterpart (may be omitted or paraphrased).`,
+          suggestedFix: undefined,
+          findingSignature: computeNumericalFindingSignature({
+            kind: fact.kind,
+            expectedValue: fact.value,
+            expectedBangla: canonical.primary,
+          }),
+        });
+      } else {
+        // Multiple unmatched numbers with uncertain alignment -> ambiguous comparison (never a false high-severity error)
+        const candidateTexts = remainingConflictBnIndices
+          .map((bIdx) => `${banglaTokens[bIdx].rawText} (${banglaTokens[bIdx].value})`)
+          .join(', ');
+        comparisonsByFactIdx.set(fIdx, {
+          id: `num-ambig-p${pIndex}-f${fIdx}-v${fact.value}`,
+          paragraphIndex: pIndex,
+          displayParagraphNumber: pIndex + 1,
+          status: 'ambiguous',
+          kind: fact.kind,
+          expectedValue: fact.value,
+          matchedEnglishText: fact.rawText,
+          expectedBangla: canonical.primary,
+          acceptedBanglaForms: canonical.alternatives,
+          severity: 'low',
+          englishExcerpt: buildExcerpt(englishText),
+          banglaExcerpt: buildExcerpt(banglaText),
+          description: `Ambiguous numerical comparison for "${fact.rawText}" (${fact.value}) in Paragraph ${pIndex + 1} alongside unmatched Bangla number(s): ${candidateTexts}.`,
+          suggestedFix: undefined,
+          findingSignature: computeNumericalFindingSignature({
+            kind: fact.kind,
+            expectedValue: fact.value,
+            expectedBangla: canonical.primary,
+          }),
+        });
+      }
+    }
+  }
+
+  const comparisons: NumericalVerificationFinding[] = [...halfUnitMismatches];
+  for (let fIdx = 0; fIdx < englishFacts.length; fIdx++) {
+    const comp = comparisonsByFactIdx.get(fIdx);
+    if (comp) {
+      comparisons.push(comp);
+    }
+  }
+
+  const confirmedMismatches = comparisons.filter(
+    (c) => c.status === 'confirmed_mismatch'
+  );
+  const missingNumbers = comparisons.filter(
+    (c) => c.status === 'missing_number'
+  );
+  const ambiguousComparisons = comparisons.filter(
+    (c) => c.status === 'ambiguous'
+  );
+  const matchedComparisons = comparisons.filter(
+    (c) => c.status === 'no_mismatch'
+  );
+
+  return {
+    paragraphIndex: pIndex,
+    englishFacts,
+    banglaTokens,
+    comparisons,
+    findings: comparisons,
+    confirmedMismatches,
+    missingNumbers,
+    ambiguousComparisons,
+    matchedComparisons,
+    issues: confirmedMismatches.map(numericalFindingToVerificationIssue),
+  };
+}
+
+/**
+ * Deterministically checks an entire chapter's `ParagraphPair[]` for explicit numerical consistency.
+ * Pure and side-effect free: never mutates `paragraphs`.
+ */
+export function lintChapterNumericalConsistency(
+  paragraphs: ReadonlyArray<ParagraphPair>
+): ChapterNumericalLintResult {
+  const paragraphResults: ParagraphNumericalLintResult[] = [];
+  const confirmedMismatches: NumericalVerificationFinding[] = [];
+  const missingNumbers: NumericalVerificationFinding[] = [];
+  const ambiguousComparisons: NumericalVerificationFinding[] = [];
+  const matchedComparisons: NumericalVerificationFinding[] = [];
+
+  let totalParagraphsChecked = 0;
+
+  for (const p of paragraphs) {
+    if (p.englishText?.trim() && p.banglaText?.trim() && !p.missingTranslation) {
+      totalParagraphsChecked++;
+    }
+    const res = lintParagraphNumericalConsistency(p);
+    paragraphResults.push(res);
+    confirmedMismatches.push(...res.confirmedMismatches);
+    missingNumbers.push(...res.missingNumbers);
+    ambiguousComparisons.push(...res.ambiguousComparisons);
+    matchedComparisons.push(...res.matchedComparisons);
+  }
+
+  return {
+    findings: confirmedMismatches,
+    confirmedMismatches,
+    missingNumbers,
+    ambiguousComparisons,
+    matchedComparisons,
+    issues: confirmedMismatches.map(numericalFindingToVerificationIssue),
+    paragraphResults,
+    summary: {
+      totalParagraphsChecked,
+      confirmedMismatchCount: confirmedMismatches.length,
+      missingNumberCount: missingNumbers.length,
+      ambiguousComparisonCount: ambiguousComparisons.length,
+      matchedComparisonCount: matchedComparisons.length,
+    },
   };
 }
 

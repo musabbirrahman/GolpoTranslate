@@ -1,0 +1,224 @@
+================================================================
+GOLPOTRANSLATE TEST CORPUS — 02 OF 05
+================================================================
+TITLE:      The Stopped Clock at Ridgemoor
+GENRE:      Mystery / detective
+LENGTH:     approx. 2,100 words
+POV/TENSE:  First person (the detective's assistant), past tense
+
+WHAT THIS STORY TESTS
+- Fair-play clues: several phrases appear early and must be translated
+  so the later deduction still works (times, numbers, wording).
+- Deliberate ambiguity: a witness statement that can be read two ways.
+  The translation must preserve BOTH readings.
+- Misleading assumptions: the narrator's wrong guesses must stay
+  plausible in Bangla.
+- Suspense pacing and a "reveal" scene with long, logical dialogue.
+
+----------------------------------------------------------------
+STORY
+----------------------------------------------------------------
+
+THE STOPPED CLOCK AT RIDGEMOOR
+
+Inspector Anwar Hossain did not like hill stations. He said the air was too thin for honest thinking and too thick with people who had come to forget things. I thought this was unfair, but I kept my opinion to myself, as assistants do, and carried his case up the muddy path to Ridgemoor Lodge while the mist rolled over the tea bushes like spilled milk.
+
+The lodge belonged to Mr. Tarek Mahmud, a tea-estate owner of sixty-one. He had been found dead that morning in his study, slumped over his desk, a cup of tea by his hand. The local police had decided it was a heart attack. The estate manager, a nervous man named Kabir, had decided otherwise, and had telephoned the Inspector, who happened to be on leave two valleys away and did not know how to refuse anyone.
+
+"A heart attack," Anwar said, as the lodge door opened. "Then why are we here?"
+
+"Because Mr. Mahmud's heart was strong," said Kabir, who was waiting for us, twisting his cap. "He walked the whole estate every morning. And the cup, sir. The cup was wrong."
+
+"Wrong how?"
+
+"He never drank from that one."
+
+---
+
+The study was a small square room with a window facing the garden, a heavy desk, and two clocks. One was a brass carriage clock on the desk. The other was a tall wooden wall clock, with a pendulum, beside the bookshelf. The carriage clock said ten past ten. The wall clock said twenty to seven.
+
+"They disagree," I said.
+
+"One of them is lying," said Anwar. "Clocks are the only witnesses who lie politely." He crouched by the desk. "Who found him?"
+
+"The maid, Rupa," said Kabir. "At seven this morning. She brought the morning tea and he did not answer."
+
+"Seven in the morning," Anwar repeated. "And the clocks?"
+
+"The wall clock has been stopped since last night, sir. The pendulum is still. Mr. Mahmud wound it every Sunday, but this week he forgot, or—" Kabir's voice faded. "The brass one runs."
+
+Anwar nodded and moved on to the body, which had already been taken away, leaving only a pale outline in the dust on the desk where an arm had lain. The teacup was a white china one, with a thin blue rim. He lifted it by the edge and sniffed.
+
+"Cardamom," he said. "And something bitter underneath. Not strong." He turned the cup in his fingers. "You are right, Kabir. This is a guest's cup. The family set is on the shelf there, with the gold rim. Who brought it?"
+
+"Rupa."
+
+"Then we should speak to Rupa."
+
+---
+
+Rupa was seventeen and trying very hard not to cry. She sat on the edge of a kitchen stool with her hands pressed between her knees.
+
+"I made the tea at six-thirty, as always," she said. "I put it on the tray. The gold-rimmed cup. And I took it to the study at seven."
+
+"Gold rim," Anwar said.
+
+"Yes, sir."
+
+"But the cup in the study had a blue rim."
+
+Rupa stared at him. "No, sir. That is not possible. I only take the gold ones to the study. The blue ones are for the guests."
+
+"Then someone changed them."
+
+"I... I don't know." She wiped her eyes. "But sir, there is something else. Last night, when I went to lock the back door, I heard Mr. Mahmud talking in the study. Quarrelling. He said, 'You will have it by the morning, and then we are finished.'"
+
+"By the morning," Anwar said. "You are sure of the words?"
+
+"Yes."
+
+"And the other voice?"
+
+"I did not hear. Only him."
+
+Anwar thanked her and stood. In the corridor he said to me, very quietly, "Write that down exactly. 'By the morning, and then we are finished.' Do not tidy it."
+
+---
+
+I will confess here that I had decided who the murderer was by lunchtime.
+
+There were three guests at the lodge that weekend. The first was Dr. Salma Rahman, a widow who had once been engaged to Mr. Mahmud's late brother. The second was Imran, Mr. Mahmud's nephew, a thin and restless young man who had borrowed money from his uncle and not returned it. The third was Mr. Fazlu Sheikh, a tea broker from Chittagong, who had arrived on Friday to discuss a contract.
+
+I thought it was Imran. Debts make quick murderers, and he had the most obvious reason. I said so to Anwar over a cold lunch of rice and lentils.
+
+"He has a reason," Anwar agreed. "That is not the same as a method."
+
+"The poison—"
+
+"There was a bitter taste in the cup, yes. But a poisoner who wants a death to look like a heart attack does not use the guest cup, which is a different colour and would immediately attract attention. That is clumsy. Imran is many things, but I have talked to him for ten minutes and I would not call him clumsy."
+
+"Then perhaps he swapped the cups to confuse us."
+
+"Perhaps." He peeled a banana slowly. "Or perhaps someone else did, for a different reason."
+
+I did not understand what he meant. I wrote it down anyway.
+
+---
+
+We interviewed the three guests in the afternoon.
+
+Dr. Rahman said she had been in her room all night, reading. She had last seen Mr. Mahmud at dinner, at eight, when he had seemed tired but cheerful. She mentioned, in a tone of mild surprise, that the dinner gong had been late. "Half past eight," she said. "Mr. Mahmud was always punctual, so it was odd."
+
+Imran said he had been asleep by ten. He was nervous and sullen and said the word "uncle" as if it hurt. When Anwar asked about the money, he went white, then red, then said nothing.
+
+Mr. Fazlu Sheikh was the calmest. He was a heavy man in a grey suit, with a gold watch he kept consulting. He said he had met Mr. Mahmud at six the previous evening to finalise the contract, and had left the study at ten past six. "A long meeting," he said. "He insisted on reading every line. I did not mind. He was a careful man."
+
+"Did he seem well?" asked Anwar.
+
+"Perfectly. Though I noticed the wall clock was already stopped at twenty to seven. I remember because I joked about it. He said he would wind it on Sunday." Mr. Sheikh smiled sadly. "He did not live to Sunday."
+
+Anwar thanked him. When Mr. Sheikh had gone, Anwar sat for a long time looking at nothing.
+
+"Twenty to seven," he said at last.
+
+"Yes?"
+
+"He told us the clock was already stopped when he left at ten past six. But the clock says twenty to seven. A stopped clock cannot show a time later than the moment it stopped." He raised an eyebrow at me. "Do you see?"
+
+I did not.
+
+"If the clock stopped at twenty to seven, then it was running at ten past six, and Mr. Sheikh could not have noticed it was stopped then. So he either lied, or he is telling us about a different evening."
+
+"Perhaps he made a mistake."
+
+"Perhaps. Or perhaps he left at ten past six, and returned later, and saw the clock after it had stopped, and has quietly moved that visit into a time when he had an alibi."
+
+---
+
+We gathered everyone in the study at nine that night. The mist was pressed against the window, and the carriage clock ticked loudly in the quiet.
+
+"I will tell you what I think happened," Anwar began, "and then you may tell me where I am wrong.
+
+"Mr. Mahmud met his broker at six. They finished the contract at ten past six, as Mr. Sheikh says. Mr. Mahmud then was alone until dinner, which should have been at eight. But dinner was served at half past eight, because Mr. Mahmud was late, which in this house is unusual. Why was he late? Because he had another visitor.
+
+"Someone visited him, and they quarrelled. Rupa heard Mr. Mahmud, a little before nine, say, 'You will have it by the morning, and then we are finished.' I took this at first to mean he was making a demand. He was not. He was making a promise. He was telling someone he would hand over something by morning. What?"
+
+Nobody spoke.
+
+"A letter," said Anwar. "A confession. A signed paper. I do not know. But whatever it was, he sat down to write it, and he was writing it when he died. Look at the desk." He pointed. "There is ink on the blotter, and no paper. Someone has taken it."
+
+Dr. Rahman had folded her hands tightly. Imran looked at the floor.
+
+"Now the cup. A blue-rimmed cup, a guest's cup, was by his hand. Rupa swears she brought a gold one at seven. I believe her. She brought him tea in the morning, and found him already gone. The tea in the blue cup was made the night before, and carried in by someone who took the wrong cup from the guest tray in the hall. That cup points at the guests, but it points at all three of you equally, and so it tells us nothing. The clocks are what tell us something."
+
+He walked to the wall clock and laid his palm against the still pendulum.
+
+"This clock stopped at twenty to seven. Mr. Mahmud wound it every Sunday, and he forgot this week. A stopped clock cannot show a time later than the moment it stopped. Mr. Sheikh. When did you say you left the study?"
+
+Mr. Sheikh's hand had stopped on his gold watch. "Ten past six."
+
+"And when did you see the wall clock stopped?"
+
+"I told you. At ten past six, I—" He stopped.
+
+"You cannot have seen it stopped then," Anwar said gently. "At ten past six it was running. It stopped at twenty to seven, and you were not in the room at twenty to seven, unless you came back. You came back after dinner, when the others had gone to their rooms, for a paper Mr. Mahmud had promised you 'by the morning,' a paper that would have ended your contract and your career, because it was a record of the false weights you had reported for three years."
+
+Nobody moved. In the silence, the carriage clock ticked on, and its honest brass hands showed nine o'clock and nothing else.
+
+"The bitter taste was a sedative," Anwar added. "You carried the cup, the wrong cup, because you took it from the guest tray in the hall without thinking. It was the only mistake you made. And it was enough."
+
+---
+
+Afterward, on the veranda, with the mist lifting at last and the first stars out above the tea bushes, I asked Anwar how he had known.
+
+"I did not know," he said. "I noticed. A man who says he saw a clock stopped before it stopped has told you he was somewhere he was not." He took a slow breath of the thin air. "I still do not like hill stations."
+
+"But you solved it."
+
+"Yes." He smiled faintly. "Even so."
+
+----------------------------------------------------------------
+VOICE REFERENCE (for the translator)
+----------------------------------------------------------------
+- Narrator: loyal, slightly naive, wry. Admits his own mistakes.
+- Anwar Hossain: dry, precise, understated humour, speaks in full
+  logical sentences. Gives orders softly. Never raises his voice.
+- Rupa (17): frightened, simple, direct. Rural/servant register, but
+  respectful.
+- Mr. Sheikh: smooth, formal, businesslike.
+- Tone: classic puzzle mystery. Logic must be traceable in Bangla.
+
+----------------------------------------------------------------
+CLUE CHECKLIST (do not alter in translation)
+----------------------------------------------------------------
+1. Gold-rim cup (family/study) vs. blue-rim cup (guests).
+2. Wall clock stopped at 6:40 (twenty to seven).
+3. Carriage clock is running and correct (it showed 10:10 am when the
+   detectives arrived); it is NOT a false clue.
+4. Mr. Sheikh says he left at 6:10 and "noticed" the clock already
+   stopped (impossible).
+5. Rupa's overheard line (a little before 9 pm): "You will have it by
+   the morning, and then we are finished." (a promise, not a demand)
+6. Dinner gong at 8:30 instead of 8:00.
+7. Rupa found him at 7:00 am. Tea made at 6:30 am.
+
+----------------------------------------------------------------
+TERMINOLOGY TABLE
+----------------------------------------------------------------
+Term / phrase              | Notes for translation
+---------------------------|-----------------------------------------
+Inspector                  | ইন্সপেক্টর; keep rank consistent
+tea estate / tea bushes    | চা-বাগান / চা-গাছ
+lodge                      | বাংলো / লজ (pick one, keep consistent)
+carriage clock             | ডেস্ক ঘড়ি (brass, small, desk-top)
+wall clock (pendulum)      | দেয়াল ঘড়ি; "stopped" = বন্ধ
+"stopped" vs. "running"    | KEY DISTINCTION: the whole solution rests
+                           | on 'already stopped' vs. 'still running'
+"Clocks are the only       | Witty aphorism; keep the wit
+witnesses who lie politely"|
+"guest cup" / "family set" | Blue rim vs. gold rim; keep colours fixed
+"By the morning"           | Ambiguous: promise vs. demand. Keep the
+                           | ambiguity in the Bangla phrasing
+tea broker                 | চা-দালাল / টি ব্রোকার
+false weights              | Fraud: ওজনে জালিয়াতি
+================================================================

@@ -1,0 +1,202 @@
+================================================================
+GOLPOTRANSLATE TEST CORPUS — 04 OF 05
+================================================================
+TITLE:      The Petition of Hari Mondol
+GENRE:      Historical fiction
+SETTING:    A zamindari estate in rural Bengal, 1880s (British India)
+LENGTH:     approx. 2,000 words
+POV/TENSE:  Close third person, past tense
+
+WHAT THIS STORY TESTS
+- Period vocabulary and institutions (zamindar, naib, kachari, etc.).
+- Social hierarchy expressed through speech: who may speak first, who
+  must stand, who is addressed with what honorific, and who uses
+  "apni", "tumi" or "tui" to whom.
+- Atmosphere: lamplight, heat, rain, ledgers, the sound of the estate.
+- Formal/archaic register in a petition vs. plain speech of villagers.
+- Translator's choice of "sadhu bhasha"-flavoured formality for
+  official/written speech versus natural spoken Bangla.
+
+NOTE: the story is fiction; the estate and all characters are
+invented. Terms are used in their general, period sense.
+
+----------------------------------------------------------------
+STORY
+----------------------------------------------------------------
+
+THE PETITION OF HARI MONDOL
+
+The rains came early to Shyamgunj that year, and with them came the petitions.
+
+Nabin Chakraborty had been the junior clerk at the estate's kachari for exactly eleven weeks, which meant he still wrote his letters too neatly and still jumped when the great brass bell rang for noon. He was nineteen years old. His father, a schoolmaster in a village two days' journey away, had sent him here with a bundle of clothes and a single instruction: "Keep your eyes open and your mouth shut, and you will go far."
+
+Nabin had kept his mouth shut for eleven weeks. It was going less well than he had hoped.
+
+The kachari stood at the edge of the zamindar's compound, a long, low building with a tiled roof, deep verandas, and a smell of wet paper and old ink. Inside, at their low desks, the clerks sat cross-legged on a white cloth, copying rent receipts. The head of the office, the Dewan, sat on a raised seat at the far end with his spectacles on the tip of his nose and a huqqa bubbling at his elbow. Beside the Dewan's seat, always a little too close, sat Naib Ramkanta Ghosh, the zamindar's chief agent, who collected the rents and who was, everyone agreed, the most important man in the estate after the zamindar himself, and rather more feared.
+
+On the morning of the fourth day of rain, a woman came to the door.
+
+---
+
+She did not come in. She stood at the edge of the veranda with the water running off the end of her sari, her feet bare in the mud, her head covered. Behind her, a thin boy of about ten held a bundle of cloth against his chest. She said nothing, and the clerks, who had all looked up, quickly looked down again.
+
+Nabin, who sat nearest the door, was the only one who did not.
+
+"Ma," he said softly, "do you need something?"
+
+The woman looked at him. Her eyes were red, but steady. "I have come to give a petition," she said. "My husband, Hari Mondol, is a raiyat of this estate. They took him three days ago."
+
+The clerk beside Nabin, an older man named Kalipada, hissed through his teeth. "Be quiet," he whispered. "It is not our business."
+
+"Who took him?" Nabin asked.
+
+"The naib-babu's men." She said the name quickly and quietly, the way you touch a hot pot. "They said he owed three years of rent. But my husband paid, babu. He paid. I have the receipts." She unwrapped the cloth the boy held. Inside were a handful of small, damp, thumbed papers, curling at the edges. "He kept them in a clay jar under the floor. He said, 'One day somebody will want to see.'"
+
+From the far end of the room, the Dewan cleared his throat.
+
+"Who is making this noise?" he said, without turning round.
+
+Nobody answered. The huqqa bubbled. At the Dewan's side, the Naib laid down his pen and turned his head, slowly, like a cat.
+
+---
+
+"Bring her here," said the Dewan.
+
+Nabin rose. His knees felt like water. He took the bundle from the boy and walked the length of the room between the rows of silent clerks, feeling their eyes on his back, and set the papers in front of the Dewan's seat. Behind him, the woman followed as far as the edge of the cloth, and stopped. She did not sit. A raiyat's wife did not sit in the kachari.
+
+The Dewan picked up the first receipt and held it close to his spectacles.
+
+"These are the estate's own receipts," he said slowly.
+
+"They are forged," said the Naib at once.
+
+It was the first time Nabin had been this close to the Naib. He was a stout man in a clean white dhuti with a gold ring on each of two fingers, and his voice was so smooth and so courteous that it took a moment to understand how cold it was. "Hari Mondol has been a trouble to this estate for some time," he said. "He has spoken against the new levy. He has encouraged others to speak. Now his wife comes with papers, and we are expected to believe them."
+
+"They bear the stamp of the kachari," said the Dewan.
+
+"Stamps can be copied."
+
+"They bear the clerk's hand," said the Dewan. He held one up, and tilted it toward the lamp that burned, even at noon, because of the rain. "This is Kalipada's writing. I know it as I know my own."
+
+At the back of the room, Kalipada made a small sound like a man who has been told his house is on fire.
+
+"Then Kalipada is a forger," said the Naib, smiling.
+
+"No," said Nabin.
+
+He had not meant to speak. The word left him the way a stone leaves the hand. Every head in the room turned, and he felt his father's instruction, *eyes open, mouth shut*, fall away behind him like a wall.
+
+---
+
+"What did you say?" asked the Naib, very gently.
+
+"I said no, naib-babu." Nabin's voice shook, but it held. "The receipts are not forged. The estate keeps a copy of each in the great ledger, the khata, by village and by year. If the receipts are true, the ledger will say the same. If the ledger does not say the same, then either the ledger was altered, or the receipts were. And one of those things can be proved."
+
+"How?" said the Dewan, quite softly.
+
+"By the ink, sir." Nabin swallowed. "The monsoon makes ink behave in a particular way. Ink that is three years old, on paper kept in a ledger room, turns brown at the edges. Ink that is three years old on paper kept under a floor, in a clay jar, goes grey. Hari Mondol's receipts are grey." He pointed. "Look. If someone had written them last month, the colour would be black. If someone had written them in the same ink as the ledger and then swapped the pages, the ledger would not be brown, but fresh."
+
+There was a long silence. Even the rain seemed to listen.
+
+"And this," said the Naib, in a voice like oil, "is your professional opinion? After eleven weeks?"
+
+"It is my father's opinion," said Nabin. "He is a schoolmaster. He taught me to look at ink."
+
+Somebody, somewhere behind him, laughed. It was a short, startled sound, cut off at once. But it was out in the air now, and it could not be put back.
+
+---
+
+The Dewan sent for the khata.
+
+It was brought by two peons, who carried it between them on a wooden board, a great cloth-bound book as long as a child. They laid it on the floor before the Dewan's seat and he turned the pages himself, one by one, running a finger down the columns. Nobody spoke. The huqqa had gone out. The lamp flickered.
+
+At last he stopped.
+
+"Shyamgunj village," he read. "Hari Mondol, son of Gopal Mondol. Rent for the years 1884, 1885, 1886. Paid in full." He looked up. "The ledger agrees with the receipts."
+
+"The ledger," said the Naib, "could have been—"
+
+"Look at the ink, Ramkanta-babu." The Dewan held out the page. It was brown at the edges, the old comfortable brown of a record that had lived in the dark for years. Then he turned another page, a recent one. "And here, in the matter of the new levy, I see that someone has added Hari Mondol's name to the list of defaulters. In this month. In fresh ink." He laid the ledger down. "Very black ink."
+
+The Naib said nothing.
+
+"Kalipada." The Dewan did not raise his voice. "You will write an order for the release of Hari Mondol. You will write it now, in your best hand, and a peon will carry it to the lockup before dark."
+
+"Yes, Dewan-sahib," said Kalipada, who had gone the colour of the ledger paper and whose hands, as he reached for his pen, were not entirely steady.
+
+"And you, Ramkanta-babu," the Dewan went on, "will wait for me in my room. The zamindar will wish to hear about the new levy, and I think he will wish to hear it from me first."
+
+---
+
+It was nearly evening when Hari Mondol came back to his house. The rain had thinned to a steady drizzle, and the paddy fields on both sides of the path lay silver and flat. He walked slowly. He had lost weight. His wrists were marked where the rope had been.
+
+His wife was waiting at the door with a lamp. She did not speak. She put the lamp down, took his hand, and held it against her face, and the boy ran out and wrapped his arms around his father's waist, and for a long time nobody said anything at all.
+
+Later, when the lamp had burned low and the boy was asleep, Hari said, "Who was it? Who spoke for me?"
+
+"A boy," she said. "A young clerk at the kachari. His name was Nabin."
+
+"A clerk." Hari turned the word over. "Why would a clerk do that?"
+
+"I don't know," said his wife. She was looking at the small, grey, damp receipts, drying now on the windowsill in a row, like a little line of washing. "Perhaps because he could."
+
+---
+
+Nabin was dismissed from the estate within the month. The Naib had friends, even after the matter of the levy was settled, and a junior clerk who contradicts the chief agent in open kachari does not usually keep his place. The Dewan wrote him a letter of recommendation, brief and formal, addressed to no one in particular, and gave it to him in person on his last morning.
+
+"You have a good eye," said the Dewan. "It will be a pity if you waste it on a stranger's ledger."
+
+"Yes, Dewan-sahib."
+
+"Go home to your father. Tell him his lesson was not wasted." He paused, and the great old face twitched, almost kindly. "And tell him, when he next teaches a boy to look at ink, to teach him also when to speak, and when to wait."
+
+Nabin walked out of the kachari for the last time into a morning that smelled of wet earth and woodsmoke. At the end of the road, a woman and a boy were standing under a banyan tree. The woman did not speak. She put her palms together, and bent her head, and held the pose until he had gone by.
+
+He walked on. His mouth, for the first time in many weeks, was entirely his own.
+
+----------------------------------------------------------------
+VOICE REFERENCE (for the translator)
+----------------------------------------------------------------
+- Narration: measured, slightly formal, period-flavoured; avoid
+  modern slang in the Bangla.
+- Naib Ramkanta Ghosh: smooth, courteous, menacing. Polite forms used
+  as a weapon. Addresses Nabin with condescension.
+- Dewan: old, dry, dignified, fair. Speaks in measured sentences.
+- Nabin: young, earnest, nervous; uses respectful forms to superiors.
+- The raiyat's wife: simple, dignified, rural speech; addresses
+  clerks as "babu".
+- Honorific ladder (suggested): zamindar > Dewan ("Dewan-sahib") >
+  Naib ("naib-babu" / "Ramkanta-babu") > clerks > raiyats.
+- Characters must not use English words in speech; period feel is
+  essential.
+
+----------------------------------------------------------------
+TERMINOLOGY TABLE
+----------------------------------------------------------------
+Term / phrase              | Notes for translation
+---------------------------|-----------------------------------------
+zamindar                   | জমিদার
+estate (zamindari)         | জমিদারি
+kachari                    | কাছারি (estate office/court); keep as is
+Dewan                      | দেওয়ান (senior estate officer)
+Naib                       | নায়েব (chief agent who collects rent)
+raiyat                     | রায়ত (tenant farmer)
+khata                      | খাতা / খতিয়ান (ledger); pick one, keep
+                           | consistent. "great ledger"
+babu                       | বাবু; used for clerks/officers by rural
+                           | people; keep as address
+-sahib                     | সাহেব; used for the Dewan
+huqqa                      | হুঁকো
+dhuti                      | ধুতি
+lockup                     | হাজত / কয়েদখানা (estate lockup)
+peon                       | পিওন / পেয়াদা (pick the period-correct
+                           | form: পেয়াদা)
+levy                       | কর / আবওয়াব (a new, unofficial charge on
+                           | tenants); consistent word
+"Eyes open, mouth shut"    | Father's advice; echoed at the climax
+                           | and at the end; keep the echo
+rent receipts              | খাজনার রসিদ; "rent" = খাজনা
+"Perhaps because he could" | Closing line of the raiyat's wife; keep
+                           | its quiet dignity
+Years 1884-1886            | Keep as numerals
+================================================================
