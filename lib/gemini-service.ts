@@ -16,6 +16,7 @@ import type {
 } from './types';
 import { formatMemoryPromptBlock, formatStyleDirectiveBlock } from './chunker';
 import {
+  detectSiblingCompoundCollisions,
   extractContextualSenseKey,
   extractEnglishSurfaceAndSense,
   extractVerbatimProtectedSpans,
@@ -1981,6 +1982,47 @@ function buildVerbatimAndMeasurementPromptBlock(
   return blocks.join('\n\n');
 }
 
+function buildCompoundNounBoundaryPromptBlock(
+  englishParagraphs: ReadonlyArray<string>,
+  glossary: ReadonlyArray<TerminologyMemoryItem>
+): string {
+  const collisions = detectSiblingCompoundCollisions(englishParagraphs, glossary);
+  if (collisions.length === 0) return '';
+
+  const grouped = new Map<
+    string,
+    {
+      englishTerm: string;
+      banglaTranslation: string;
+      sharedModifier: string;
+      siblingPhrases: string[];
+    }
+  >();
+
+  for (const c of collisions) {
+    const existing = grouped.get(c.glossaryItem.id);
+    if (existing) {
+      if (!existing.siblingPhrases.includes(c.matchedSiblingPhrase)) {
+        existing.siblingPhrases.push(c.matchedSiblingPhrase);
+      }
+    } else {
+      grouped.set(c.glossaryItem.id, {
+        englishTerm: c.englishTerm,
+        banglaTranslation: c.banglaTranslation,
+        sharedModifier: c.sharedModifier,
+        siblingPhrases: [c.matchedSiblingPhrase],
+      });
+    }
+  }
+
+  const lines = Array.from(grouped.values()).map((g) => {
+    const siblingList = g.siblingPhrases.map((s) => `"${s}"`).join(', ');
+    return `- The glossary entry "${g.englishTerm}" -> "${g.banglaTranslation}" applies ONLY when the exact full compound "${g.englishTerm}" appears in the English source. This passage contains distinct sibling compound(s) (${siblingList}) sharing only the modifier "${g.sharedModifier}". Translate ${siblingList} according to their own exact head nouns (e.g., lease = ইজারা, brokerage = দালালি, depot = ডিপো/গুদাম); NEVER substitute "${g.banglaTranslation}" for ${siblingList}.`;
+  });
+
+  return `[COMPOUND-NOUN HEADWORD BOUNDARY RULE]:\n${lines.join('\n')}`;
+}
+
 /**
  * Stage 3 — Faithful Literary Translation (Chunk-Aware & Paragraph-Aligned with Discovery Validation)
  */
@@ -2033,6 +2075,10 @@ export async function translateChunkFaithfully(params: {
   const verbatimAndMeasurementBlock = buildVerbatimAndMeasurementPromptBlock(
     params.paragraphs
   );
+  const compoundNounBoundaryBlock = buildCompoundNounBoundaryPromptBlock(
+    params.paragraphs,
+    hydratedSnapshotGlossary
+  );
 
   const prompt = `Translate the following ${params.paragraphs.length} English literary paragraphs into exceptionally natural, fluent, expressive Bangla (বাংলা).
 
@@ -2042,7 +2088,7 @@ ${styleBlock}
 
 ${memoryBlock}
 ${previousChunkSection}
-${crossChunkContinuityBlock}${verbatimAndMeasurementBlock ? `\n${verbatimAndMeasurementBlock}` : ''}
+${crossChunkContinuityBlock}${verbatimAndMeasurementBlock ? `\n${verbatimAndMeasurementBlock}` : ''}${compoundNounBoundaryBlock ? `\n${compoundNounBoundaryBlock}` : ''}
 
 MANDATORY LITERARY TRANSLATION RULES:
 1. NATIVE LITERARY BANGLA & CLAUSE RESTRUCTURING (প্রাকৃতিক বাক্যগঠন ও চলিত বাংলা):
@@ -2497,7 +2543,7 @@ export function sanitizeStage4EditedParagraph(params: {
     return draft;
   }
 
-  // 4. Guard against introducing new high-severity definite glossary violations in Stage 4
+  // 4. Guard against introducing new high-severity definite glossary violations or compound headword bleed in Stage 4
   const glossary = params.hydratedGlossary ?? [];
   if (glossary.length > 0) {
     const draftTermLint = lintParagraphTerminology(
@@ -2508,6 +2554,12 @@ export function sanitizeStage4EditedParagraph(params: {
       { index: 0, englishText: english, banglaText: edited },
       glossary
     );
+    const hasNewCompoundBleed =
+      editedTermLint.findings.some((f) => f.code === 'compound_headword_bleed') &&
+      !draftTermLint.findings.some((f) => f.code === 'compound_headword_bleed');
+    if (hasNewCompoundBleed) {
+      return draft;
+    }
     const countHighViolations = (res: ReturnType<typeof lintParagraphTerminology>) =>
       res.findings.filter(
         (f) => f.classification === 'definite_violation' && f.severity === 'high'
@@ -2620,11 +2672,6 @@ export async function runLiteraryEditingPass(params: {
 
   const hydratedGlossary = hydrateProjectGlossary(params.terminology);
   const styleBlock = formatStyleDirectiveBlock(params.styleProfile, params.styleControls);
-  const memoryBlock = formatStageMemoryPromptBlock(
-    params.characters,
-    hydratedGlossary,
-    'stage4'
-  );
   const storyContextBlock = formatStoryContextPromptBlock(params.storyContext);
 
   const windows = splitParagraphsIntoStage4Windows(
@@ -2643,6 +2690,16 @@ export async function runLiteraryEditingPass(params: {
   for (let wIdx = 0; wIdx < windows.length; wIdx++) {
     const win = windows[wIdx];
     const windowParagraphCount = win.englishParagraphs.length;
+
+    const windowFilteredGlossary = filterGlossaryForChunk(
+      win.englishParagraphs,
+      hydratedGlossary
+    ).activeTerms;
+    const memoryBlock = formatStageMemoryPromptBlock(
+      params.characters,
+      windowFilteredGlossary,
+      'stage4'
+    );
 
     // Last 2 edited Bangla paragraphs from the preceding window for cross-window voice/pronoun continuity
     const precedingEditedBanglaContext: string[] = [];
@@ -2675,7 +2732,7 @@ export async function runLiteraryEditingPass(params: {
       banglaText: win.banglaParagraphs[localIdx],
     }));
     const numericalLint = lintChapterNumericalConsistency(windowPairs);
-    const glossaryLint = lintChapterTerminology(windowPairs, hydratedGlossary);
+    const glossaryLint = lintChapterTerminology(windowPairs, windowFilteredGlossary);
     const lintGuidanceBlock = buildStage4WindowLintGuidanceBlock({
       numericalIssues: numericalLint.issues,
       glossaryIssues: glossaryLint.issues,
@@ -2707,13 +2764,17 @@ export async function runLiteraryEditingPass(params: {
     const verbatimAndMeasurementBlock = buildVerbatimAndMeasurementPromptBlock(
       win.englishParagraphs
     );
+    const compoundNounBoundaryBlock = buildCompoundNounBoundaryPromptBlock(
+      win.englishParagraphs,
+      hydratedGlossary
+    );
 
     const prompt = `Run Stage 4 Literary Editing on the following Bangla translation draft.
 ${windowHeader}${storyContextBlock ? `\n${storyContextBlock}\n` : ''}
 ${styleBlock}
 
 ${memoryBlock}
-${precedingContinuitySection}${lintGuidanceBlock ? `${lintGuidanceBlock}\n` : ''}${verbatimAndMeasurementBlock ? `${verbatimAndMeasurementBlock}\n` : ''}
+${precedingContinuitySection}${lintGuidanceBlock ? `${lintGuidanceBlock}\n` : ''}${verbatimAndMeasurementBlock ? `${verbatimAndMeasurementBlock}\n` : ''}${compoundNounBoundaryBlock ? `${compoundNounBoundaryBlock}\n` : ''}
 EDITORIAL OBJECTIVES & LITERARY BANGLA CRAFT PRINCIPLES:
 1. NATURAL BANGLA CLAUSE RESTRUCTURING & RHYTHM (ছন্দ ও প্রবাহ):
    - Stage 4 is an editorial refinement pass, NOT a mandatory rewriting stage: elevate sentence flow, reading cadence, and idiomatic চলিত বাংলা where the DRAFT BANGLA is genuinely awkward, unnatural, or translationese ("আক্ষরিক অনুবাদ-গন্ধ"), while leaving sentences that are already accurate, natural, and true to the character's voice unchanged. Never rewrite a sentence merely to demonstrate stylistic activity, and never sacrifice semantic fidelity for elegance.

@@ -93,6 +93,8 @@ import {
   normalizeStage5IssueType,
   normalizeStage5IssueSeverity,
   getVerificationIssueScorePenalty,
+  detectSiblingCompoundCollisions,
+  findUngroundedGlossaryInjections,
 } from './terminology';
 import {
   alignParagraphs,
@@ -19685,5 +19687,365 @@ test('PPH-4.1 T-4.1-04 (compound_measurement_gauge_lint): fractional and decimal
   assert.ok(
     capturedStage3Prompt.includes('[MEASUREMENT & FRACTION PRECISION RULE]')
   );
+});
+
+test('T-4.4-01: Sibling compound collision detection and ungrounded glossary injection lint for story-02 [P11, P41] and B-SPEC cases', () => {
+  const timberTrustEntry: TerminologyMemoryItem = normalizeTerminologyItem({
+    id: 'term-timber-trust',
+    englishTerm: 'timber trust',
+    banglaTranslation: 'টিম্বার ট্রাস্ট',
+    category: 'term',
+    notes: 'Recurring commercial trust in the chapter.',
+    source: 'stage1_ai',
+    lockedByUser: true,
+  });
+
+  const story02P11English =
+    '“Your father signed it on the back of the Sylhet timber lease,” Mr. Chatterjee said, laying his spectacle-case upon the blotter to keep the corner flat. “December of thirty-eight. Two months before he died. Look at the hand, Devdas. It is his own hand, only smaller, because he was trying to get all of it above the stamp.”';
+  const story02P11CorruptedBangla =
+    '“তোমার বাবা সিলেটের টিম্বার ট্রাস্টের কাগজের উল্টো পিঠে এটা সই করেছিলেন,” চ্যাটার্জি সাহেব ব্লটারের কোণাটা চাপা দিয়ে রাখার জন্য তাঁর চশমার খাপটা তার ওপর রাখতে রাখতে বললেন। “আটত্রিশের ডিসেম্বরে। তাঁর মৃত্যুর দুই মাস আগে। হাতের লেখাটা দেখো, দেবদাস। এ তাঁর নিজেরই হাতের লেখা, শুধু একটু ছোট, কারণ তিনি স্ট্যাম্পের ওপরেরটুকু জায়গার মধ্যে পুরোটা আঁটিয়ে দেওয়ার চেষ্টা করছিলেন।”';
+
+  const story02P41English =
+    'A blue blowfly came in from the courtyard, circled the inkstand twice, and settled on the corner of the blotting-pad. Neither of them brushed it off. Below, in the lane, a hand-cart went over the loose iron plate above the drain with the double clang it had made every afternoon since Devdas’s grandfather had bought the house out of the timber brokerage.';
+  const story02P41CorruptedBangla =
+    'উঠোন থেকে একটা নীল মাছি উড়ে এসে দোয়াতদানিটার চারপাশে দুবার চক্কর কাটল, তারপর ব্লটিং-প্যাডের কোণায় এসে বসল। তাঁদের কেউই সেটাকে তাড়ালেন না। নিচে, গলির ভেতর, নর্দমার ওপরকার আলগা লোহার পাতটার ওপর দিয়ে একটা ঠেলাগাড়ি সেই চেনা জোড়া ঝনঝন শব্দ তুলে চলে গেল—দেবদাসের ঠাকুরদা টিম্বার ট্রাস্টের দালালি থেকে এই বাড়িটা কেনার পর থেকে রোজ দুপুরে যে শব্দটা হয়ে আসছে।';
+
+  // 1. Sibling compound collision detector identifies "Sylhet timber lease" and "timber brokerage"
+  const collisions = detectSiblingCompoundCollisions(
+    [story02P11English, story02P41English],
+    [timberTrustEntry]
+  );
+  assert.equal(collisions.length, 2);
+  assert.equal(collisions[0].englishTerm, 'timber trust');
+  assert.equal(collisions[0].sharedModifier, 'timber');
+  assert.equal(collisions[0].matchedSiblingPhrase, 'Sylhet timber lease');
+  assert.equal(collisions[1].matchedSiblingPhrase, 'timber brokerage');
+
+  // 2. lintParagraphTerminology flags ungrounded "টিম্বার ট্রাস্ট" in both [P11] and [P41]
+  const p11Lint = lintParagraphTerminology(
+    {
+      index: 10,
+      englishText: story02P11English,
+      banglaText: story02P11CorruptedBangla,
+    },
+    [timberTrustEntry]
+  );
+  const p11BleedFindings = p11Lint.findings.filter(
+    (f) => f.code === 'compound_headword_bleed'
+  );
+  assert.equal(p11BleedFindings.length, 1);
+  assert.equal(p11BleedFindings[0].classification, 'definite_violation');
+  assert.equal(p11BleedFindings[0].severity, 'high');
+  assert.equal(p11BleedFindings[0].expectedBangla, 'টিম্বার ট্রাস্ট');
+
+  const p41Lint = lintParagraphTerminology(
+    {
+      index: 40,
+      englishText: story02P41English,
+      banglaText: story02P41CorruptedBangla,
+    },
+    [timberTrustEntry]
+  );
+  const p41BleedFindings = p41Lint.findings.filter(
+    (f) => f.code === 'compound_headword_bleed'
+  );
+  assert.equal(p41BleedFindings.length, 1);
+  assert.equal(p41BleedFindings[0].classification, 'definite_violation');
+  assert.equal(p41BleedFindings[0].severity, 'high');
+
+  // 3. B-SPEC Positive B-4.4-P1: "salt syndicate -> সল্ট সিন্ডিকেট" bleeding into "salt pans" / "salt tariff"
+  const saltSyndicateEntry = normalizeTerminologyItem({
+    id: 'term-salt-syndicate',
+    englishTerm: 'salt syndicate',
+    banglaTranslation: 'সল্ট সিন্ডিকেট',
+    category: 'term',
+    notes: '',
+    source: 'stage1_ai',
+    lockedByUser: true,
+  });
+  const b44P1Source =
+    'The collector rode out to inspect the coastal salt pans before the new salt tariff took effect.';
+  const b44P1Collisions = detectSiblingCompoundCollisions(
+    [b44P1Source],
+    [saltSyndicateEntry]
+  );
+  assert.equal(b44P1Collisions.length, 2);
+  assert.ok(
+    b44P1Collisions.some((c) =>
+      c.matchedSiblingPhrase.toLowerCase().includes('salt pans')
+    )
+  );
+  assert.ok(
+    b44P1Collisions.some((c) =>
+      c.matchedSiblingPhrase.toLowerCase().includes('salt tariff')
+    )
+  );
+  const b44P1Lint = lintParagraphTerminology(
+    {
+      index: 0,
+      englishText: b44P1Source,
+      banglaText:
+        'নতুন সল্ট সিন্ডিকেট কার্যকর হওয়ার আগে কালেক্টর উপকূলের সল্ট সিন্ডিকেট পরিদর্শন করতে ঘোড়ায় চড়ে বেরোলেন।',
+    },
+    [saltSyndicateEntry]
+  );
+  assert.equal(
+    b44P1Lint.findings.filter((f) => f.code === 'compound_headword_bleed').length,
+    1
+  );
+
+  // 4. B-SPEC Positive B-4.4-P2: "Tea Board -> টি বোর্ড" bleeding into "tea auctions"
+  const teaBoardEntry = normalizeTerminologyItem({
+    id: 'term-tea-board',
+    englishTerm: 'Tea Board',
+    banglaTranslation: 'টি বোর্ড',
+    category: 'term',
+    notes: '',
+    source: 'stage1_ai',
+    lockedByUser: true,
+  });
+  const b44P2Source =
+    'Every Tuesday the brokers gathered on Mission Row for the autumn tea auctions.';
+  const b44P2Collisions = detectSiblingCompoundCollisions(
+    [b44P2Source],
+    [teaBoardEntry]
+  );
+  assert.equal(b44P2Collisions.length, 1);
+  assert.ok(
+    b44P2Collisions[0].matchedSiblingPhrase.toLowerCase().includes('tea auctions')
+  );
+  const b44P2Lint = lintParagraphTerminology(
+    {
+      index: 0,
+      englishText: b44P2Source,
+      banglaText:
+        'প্রতি মঙ্গলবার দালালরা শরতের টি বোর্ডের জন্য মিশন রো-তে জড়ো হতেন।',
+    },
+    [teaBoardEntry]
+  );
+  assert.equal(
+    b44P2Lint.findings.filter((f) => f.code === 'compound_headword_bleed').length,
+    1
+  );
+
+  // 5. B-SPEC Negatives B-4.4-N1, B-4.4-N2, B-4.4-N3 (zero false positives)
+  // B-4.4-N1: Registered alias "Port Commissioners" for "Calcutta Port Commissioners" -> allowed, 0 findings
+  const portCommissionersEntry = normalizeTerminologyItem({
+    id: 'term-port-commissioners',
+    englishTerm: 'Calcutta Port Commissioners',
+    banglaTranslation: 'ক্যালকাটা পোর্ট কমিশনার্স',
+    category: 'name',
+    notes: 'Aliases: Port Commissioners',
+    source: 'stage1_ai',
+    lockedByUser: true,
+    aliases: ['Port Commissioners'],
+  });
+  const n1Lint = lintParagraphTerminology(
+    {
+      index: 29,
+      englishText:
+        'The jetty lease was countersigned by the Port Commissioners in November.',
+      banglaText:
+        'নভেম্বর মাসে জেটির ইজারাটি ক্যালকাটা পোর্ট কমিশনার্স কর্তৃক প্রতিস্বাক্ষরিত হয়েছিল।',
+    },
+    [portCommissionersEntry]
+  );
+  assert.equal(n1Lint.findings.length, 0);
+
+  // B-4.4-N2: "salt syndicate" in glossary + accurately translated "salt barge -> লবণের বজরা" in the same paragraph -> 0 findings
+  const n2Lint = lintParagraphTerminology(
+    {
+      index: 30,
+      englishText:
+        'At dusk the salt barge moored below the ghat while the clerk waited.',
+      banglaText:
+        'সন্ধ্যায় লবণের বজরাটি ঘাটের নিচে নোঙর করল আর কেরানি অপেক্ষা করতে লাগল।',
+    },
+    [saltSyndicateEntry]
+  );
+  assert.equal(n2Lint.findings.length, 0);
+
+  // B-4.4-N3: Lone shared word ("salt") in "He sprinkled salt on the boiled potatoes" -> "সে সেদ্ধ আলুতে লবণ ছিটিয়ে দিল" with "salt syndicate" in glossary -> 0 collisions, 0 findings
+  const n3Collisions = detectSiblingCompoundCollisions(
+    ['He sprinkled salt on the boiled potatoes.'],
+    [saltSyndicateEntry]
+  );
+  assert.equal(n3Collisions.length, 0);
+  const n3Lint = lintParagraphTerminology(
+    {
+      index: 31,
+      englishText: 'He sprinkled salt on the boiled potatoes.',
+      banglaText: 'সে সেদ্ধ আলুতে লবণ ছিটিয়ে দিল।',
+    },
+    [saltSyndicateEntry]
+  );
+  assert.equal(n3Lint.findings.length, 0);
+});
+
+test('T-4.4-02: sanitizeStage4EditedParagraph rejects Stage 4 compound_headword_bleed and restores Stage 3 faithful compound translation', () => {
+  const timberTrustEntry: TerminologyMemoryItem = normalizeTerminologyItem({
+    id: 'term-timber-trust',
+    englishTerm: 'timber trust',
+    banglaTranslation: 'টিম্বার ট্রাস্ট',
+    category: 'term',
+    notes: 'Recurring commercial trust in the chapter.',
+    source: 'stage1_ai',
+    lockedByUser: true,
+  });
+
+  const story02P11English =
+    '“Your father signed it on the back of the Sylhet timber lease,” Mr. Chatterjee said, laying his spectacle-case upon the blotter to keep the corner flat. “December of thirty-eight. Two months before he died. Look at the hand, Devdas. It is his own hand, only smaller, because he was trying to get all of it above the stamp.”';
+  const stage3DraftP11 =
+    '“তোমার বাবা সিলেটের কাঠের ইজারার কাগজের উল্টো পিঠে এটা সই করেছিলেন,” চ্যাটার্জি সাহেব ব্লটারের কোণাটা চাপা দিয়ে রাখার জন্য তাঁর চশমার খাপটা তার ওপর রাখতে রাখতে বললেন। “আটত্রিশের ডিসেম্বরে। তাঁর মৃত্যুর দুই মাস আগে। হাতের লেখাটা দেখো, দেবদাস। এ তাঁর নিজেরই হাতের লেখা, শুধু একটু ছোট, কারণ তিনি স্ট্যাম্পের ওপরেরটুকু জায়গার মধ্যে পুরোটা আঁটিয়ে দেওয়ার চেষ্টা করছিলেন।”';
+  const stage4CorruptedP11 =
+    '“তোমার বাবা সিলেটের টিম্বার ট্রাস্টের কাগজের উল্টো পিঠে এটা সই করেছিলেন,” চ্যাটার্জি সাহেব ব্লটারের কোণাটা চাপা দিয়ে রাখার জন্য তাঁর চশমার খাপটা তার ওপর রাখতে রাখতে বললেন। “আটত্রিশের ডিসেম্বরে। তাঁর মৃত্যুর দুই মাস আগে। হাতের লেখাটা দেখো, দেবদাস। এ তাঁর নিজেরই হাতের লেখা, শুধু একটু ছোট, কারণ তিনি স্ট্যাম্পের ওপরেরটুকু জায়গার মধ্যে পুরোটা আঁটিয়ে দেওয়ার চেষ্টা করছিলেন।”';
+
+  const sanitizedP11 = sanitizeStage4EditedParagraph({
+    englishParagraph: story02P11English,
+    draftBanglaParagraph: stage3DraftP11,
+    editedBanglaParagraph: stage4CorruptedP11,
+    hydratedGlossary: [timberTrustEntry],
+  });
+
+  assert.equal(sanitizedP11, stage3DraftP11);
+  assert.ok(sanitizedP11.includes('সিলেটের কাঠের ইজারার'));
+  assert.ok(!sanitizedP11.includes('টিম্বার ট্রাস্ট'));
+});
+
+test('T-4.4-03: Stage 4 window-scoped glossary filtering excludes unmatched sibling-colliding compound from Window 1 [P01-P20] while including it in windows containing [P30, P31, P48]', async () => {
+  const timberTrustEntry: TerminologyMemoryItem = normalizeTerminologyItem({
+    id: 'term-timber-trust',
+    englishTerm: 'timber trust',
+    banglaTranslation: 'টিম্বার ট্রাস্ট',
+    category: 'term',
+    notes: 'Recurring commercial trust in the chapter.',
+    source: 'stage1_ai',
+    lockedByUser: true,
+  });
+
+  // Construct a 48-paragraph fixture mirroring story-02 where:
+  // - Window 1 ([P01-P20], indices 0..19) has "Sylhet timber lease" at [P11] (index 10) and no "timber trust"
+  // - Window 2 ([P21-P40], indices 20..39) has "timber trust" at [P30] (index 29) and [P31] (index 30)
+  // - Window 3 ([P41-P48], indices 40..47) has "timber brokerage" at [P41] (index 40) and "timber trust" at [P48] (index 47)
+  const englishParagraphs: string[] = [];
+  const draftBanglaParagraphs: string[] = [];
+  for (let i = 0; i < 48; i++) {
+    if (i === 10) {
+      englishParagraphs.push(
+        '“Your father signed it on the back of the Sylhet timber lease,” Mr. Chatterjee said.'
+      );
+      draftBanglaParagraphs.push(
+        '“তোমার বাবা সিলেটের কাঠের ইজারার কাগজের উল্টো পিঠে এটা সই করেছিলেন,” চ্যাটার্জি সাহেব বললেন।'
+      );
+    } else if (i === 29 || i === 30 || i === 47) {
+      englishParagraphs.push(
+        '“You are thinking of the timber trust,” Mr. Chatterjee said.'
+      );
+      draftBanglaParagraphs.push(
+        '“তুমি টিম্বার ট্রাস্টের কথা ভাবছ,” চ্যাটার্জি সাহেব বললেন।'
+      );
+    } else if (i === 40) {
+      englishParagraphs.push(
+        'Devdas’s grandfather had bought the house out of the timber brokerage.'
+      );
+      draftBanglaParagraphs.push(
+        'দেবদাসের ঠাকুরদা কাঠের দালালি থেকে এই বাড়িটা কিনেছিলেন।'
+      );
+    } else {
+      englishParagraphs.push(`Paragraph ${i + 1} source text in the study.`);
+      draftBanglaParagraphs.push(`পড়ার ঘরে অনুচ্ছেদ ${i + 1}-এর বাংলা অনুবাদ।`);
+    }
+  }
+
+  // Direct filterGlossaryForChunk check on Window 1 ([P01-P20]), Window 2 ([P21-P40]), Window 3 ([P41-P48])
+  const win1Filter = filterGlossaryForChunk(
+    englishParagraphs.slice(0, 20),
+    [timberTrustEntry]
+  );
+  assert.equal(
+    win1Filter.activeTerms.some((t) => t.englishTerm === 'timber trust'),
+    false,
+    'Expected "timber trust" to be excluded from Window 1 [P01-P20] activeTerms when only "Sylhet timber lease" appears'
+  );
+
+  const win2Filter = filterGlossaryForChunk(
+    englishParagraphs.slice(20, 40),
+    [timberTrustEntry]
+  );
+  assert.equal(
+    win2Filter.activeTerms.some((t) => t.englishTerm === 'timber trust'),
+    true,
+    'Expected "timber trust" to be included in Window 2 [P21-P40] activeTerms where [P30, P31] contain "timber trust"'
+  );
+
+  const win3Filter = filterGlossaryForChunk(
+    englishParagraphs.slice(40, 48),
+    [timberTrustEntry]
+  );
+  assert.equal(
+    win3Filter.activeTerms.some((t) => t.englishTerm === 'timber trust'),
+    true,
+    'Expected "timber trust" to be included in Window 3 [P41-P48] activeTerms where [P48] contains "timber trust"'
+  );
+
+  // Verify runLiteraryEditingPass builds per-window memoryBlock and injects [COMPOUND-NOUN HEADWORD BOUNDARY RULE]
+  const capturedWindowPrompts: string[] = [];
+  const stage4Result = await runLiteraryEditingPass({
+    englishParagraphs,
+    banglaParagraphs: draftBanglaParagraphs,
+    styleProfile: null,
+    storyContext: null,
+    characters: [],
+    terminology: [timberTrustEntry],
+    styleControls: {
+      preserveAuthorStyle: true,
+      naturalness: 'highly_natural',
+      literaryExpression: 'balanced',
+      languageComplexity: 'moderate',
+      dialogueStyle: 'more_conversational',
+      translationApproach: 'faithful_literary',
+    },
+    windowSize: 20,
+    stage4Executor: async ({ prompt, banglaParagraphs }) => {
+      capturedWindowPrompts.push(prompt);
+      return {
+        editedParagraphs: [...banglaParagraphs],
+        editorialNotes: [],
+        editorialChanges: [],
+      };
+    },
+  });
+
+  assert.equal(capturedWindowPrompts.length, 3);
+  const expectedStage4GlossaryLine = `- "timber trust" (${timberTrustEntry.category}) -> Preferred Bangla: "টিম্বার ট্রাস্ট"`;
+  // In Window 1 prompt: "timber trust -> টিম্বার ট্রাস্ট" is NOT in the Mandatory Glossary section,
+  // and [COMPOUND-NOUN HEADWORD BOUNDARY RULE] IS present warning about "Sylhet timber lease".
+  assert.ok(
+    !capturedWindowPrompts[0].includes(expectedStage4GlossaryLine),
+    'Window 1 Stage 4 memoryBlock must not list "timber trust -> টিম্বার ট্রাস্ট" as an active glossary directive'
+  );
+  assert.ok(
+    capturedWindowPrompts[0].includes('No active glossary terms for this segment.'),
+    'Window 1 Stage 4 memoryBlock must state no active glossary terms for this segment'
+  );
+  assert.ok(
+    capturedWindowPrompts[0].includes('[COMPOUND-NOUN HEADWORD BOUNDARY RULE]'),
+    'Window 1 Stage 4 prompt must include [COMPOUND-NOUN HEADWORD BOUNDARY RULE]'
+  );
+
+  // In Window 2 and Window 3 prompts: "timber trust -> টিম্বার ট্রাস্ট" IS in the Mandatory Glossary section.
+  assert.ok(
+    capturedWindowPrompts[1].includes(expectedStage4GlossaryLine),
+    'Window 2 Stage 4 memoryBlock must include "timber trust -> টিম্বার ট্রাস্ট" when [P30, P31] appear in the window'
+  );
+  assert.ok(
+    capturedWindowPrompts[2].includes(expectedStage4GlossaryLine),
+    'Window 3 Stage 4 memoryBlock must include "timber trust -> টিম্বার ট্রাস্ট" when [P48] appears in the window'
+  );
+  assert.ok(
+    capturedWindowPrompts[2].includes('[COMPOUND-NOUN HEADWORD BOUNDARY RULE]'),
+    'Window 3 Stage 4 prompt must also include [COMPOUND-NOUN HEADWORD BOUNDARY RULE] because [P41] has "timber brokerage"'
+  );
+  assert.equal(stage4Result.editedParagraphs.length, 48);
 });
 

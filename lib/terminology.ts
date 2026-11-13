@@ -23,6 +23,15 @@ import {
   type TextChunk,
 } from './chunker';
 
+declare module './types' {
+  interface TerminologyMemoryItem {
+    aliases?: string[];
+  }
+  interface TerminologyLintFinding {
+    code?: string;
+  }
+}
+
 const VALID_CATEGORIES: ReadonlySet<TerminologyCategory> = new Set<TerminologyCategory>([
   'name',
   'place',
@@ -760,6 +769,15 @@ export function normalizeTerminologyItem(
       : '';
   const banglaStemRaw =
     typeof raw.banglaStem === 'string' ? normalizeBanglaUnicode(raw.banglaStem) : '';
+  const aliases = Array.isArray(raw.aliases)
+    ? Array.from(
+        new Set(
+          raw.aliases
+            .map((a) => (typeof a === 'string' ? normalizeEnglishTerm(a) : ''))
+            .filter((a) => a.length > 0 && a.toLowerCase() !== englishTerm.toLowerCase())
+        )
+      )
+    : [];
 
   return {
     id:
@@ -771,6 +789,7 @@ export function normalizeTerminologyItem(
     ...(explanatoryMeaningRaw ? { explanatoryMeaning: explanatoryMeaningRaw } : {}),
     acceptedAlternatives,
     avoidTranslations,
+    ...(aliases.length > 0 ? { aliases } : {}),
     category,
     ...(contextMeaningRaw ? { contextMeaning: contextMeaningRaw } : {}),
     notes: typeof raw.notes === 'string' ? raw.notes.trim() : '',
@@ -1450,11 +1469,40 @@ export function generateConservativeEnglishWordForms(
  * and preventing hyphenated compound leaks like "motor-boat" when matching "boat").
  * Supports both straight and curly apostrophes in all tokens of multi-word phrases.
  */
-export function findEnglishTermOccurrences(
+function extractRegisteredEnglishAliases(item: TerminologyMemoryItem): string[] {
+  const aliases = new Set<string>();
+  const primaryLower = getEnglishSurfaceTerm(item.englishTerm).toLowerCase();
+
+  if (Array.isArray(item.aliases)) {
+    for (const rawAlias of item.aliases) {
+      const cleaned = getEnglishSurfaceTerm(rawAlias ?? '');
+      if (cleaned && cleaned.toLowerCase() !== primaryLower) {
+        aliases.add(cleaned);
+      }
+    }
+  }
+
+  if (item.notes) {
+    const noteMatch = /\balias(?:es)?\s*:\s*([^\n;|]+)/i.exec(item.notes);
+    if (noteMatch && noteMatch[1]) {
+      for (const part of noteMatch[1].split(',')) {
+        const cleaned = getEnglishSurfaceTerm(part.replace(/^["'“”‘’]+|["'“”‘’]+$/g, ''));
+        if (cleaned && cleaned.toLowerCase() !== primaryLower) {
+          aliases.add(cleaned);
+        }
+      }
+    }
+  }
+
+  return Array.from(aliases);
+}
+
+function findSingleEnglishSurfaceTermOccurrences(
   englishText: string,
-  item: TerminologyMemoryItem
+  surfaceTermInput: string,
+  item: Pick<TerminologyMemoryItem, 'category' | 'caseSensitive'>
 ): EnglishTermMatchSpan[] {
-  const term = getEnglishSurfaceTerm(item.englishTerm);
+  const term = getEnglishSurfaceTerm(surfaceTermInput);
   if (!englishText || !term) return [];
 
   // Unwrap optional outer Markdown italics (*...*) so bracketed or italicized recurring expressions
@@ -1520,6 +1568,33 @@ export function findEnglishTermOccurrences(
   }
 
   return spans;
+}
+
+export function findEnglishTermOccurrences(
+  englishText: string,
+  item: TerminologyMemoryItem
+): EnglishTermMatchSpan[] {
+  const primarySpans = findSingleEnglishSurfaceTermOccurrences(
+    englishText,
+    item.englishTerm,
+    item
+  );
+  const aliases = extractRegisteredEnglishAliases(item);
+  if (aliases.length === 0) {
+    return primarySpans;
+  }
+
+  const combined: EnglishTermMatchSpan[] = [...primarySpans];
+  for (const alias of aliases) {
+    const aliasSpans = findSingleEnglishSurfaceTermOccurrences(englishText, alias, item);
+    for (const s of aliasSpans) {
+      if (!combined.some((existing) => spansOverlap(existing, s))) {
+        combined.push(s);
+      }
+    }
+  }
+
+  return combined.sort((a, b) => a.start - b.start || a.end - b.end);
 }
 
 function spansOverlap(
@@ -1803,6 +1878,562 @@ export function matchesBanglaTerm(
   return findBanglaTermOccurrences(banglaText, banglaTerm, options).length > 0;
 }
 
+const NON_COMPOUND_MODIFIER_WORDS: ReadonlySet<string> = new Set<string>([
+  'the',
+  'this',
+  'that',
+  'these',
+  'those',
+  'his',
+  'her',
+  'our',
+  'your',
+  'their',
+  'its',
+  'my',
+  'some',
+  'any',
+  'every',
+  'each',
+  'all',
+  'both',
+  'other',
+  'another',
+  'same',
+  'such',
+  'old',
+  'new',
+  'young',
+  'good',
+  'bad',
+  'great',
+  'little',
+  'small',
+  'large',
+  'big',
+  'long',
+  'short',
+  'high',
+  'low',
+  'first',
+  'second',
+  'third',
+  'fourth',
+  'fifth',
+  'last',
+  'next',
+  'mr',
+  'mrs',
+  'miss',
+  'ms',
+  'dr',
+  'sir',
+  'lord',
+  'lady',
+  'st',
+  'saint',
+  'not',
+  'one',
+  'two',
+  'three',
+  'four',
+  'five',
+  'six',
+  'seven',
+  'eight',
+  'nine',
+  'ten',
+]);
+
+const NON_SIBLING_HEAD_FOLLOWERS: ReadonlySet<string> = new Set<string>([
+  // Prepositions & particles
+  'on',
+  'in',
+  'at',
+  'to',
+  'for',
+  'from',
+  'with',
+  'by',
+  'of',
+  'off',
+  'out',
+  'up',
+  'down',
+  'into',
+  'onto',
+  'upon',
+  'over',
+  'under',
+  'above',
+  'below',
+  'between',
+  'among',
+  'through',
+  'across',
+  'along',
+  'around',
+  'behind',
+  'beside',
+  'besides',
+  'beyond',
+  'near',
+  'inside',
+  'outside',
+  'within',
+  'without',
+  'against',
+  'toward',
+  'towards',
+  'before',
+  'after',
+  'since',
+  'until',
+  'till',
+  'during',
+  'despite',
+  'except',
+  'like',
+  'unlike',
+  'about',
+  'amid',
+  'amidst',
+  'beneath',
+  'underneath',
+  'alongside',
+  // Conjunctions, relatives, determiners, pronouns
+  'and',
+  'or',
+  'nor',
+  'but',
+  'yet',
+  'so',
+  'as',
+  'if',
+  'than',
+  'that',
+  'which',
+  'who',
+  'whom',
+  'whose',
+  'where',
+  'when',
+  'while',
+  'whilst',
+  'whether',
+  'though',
+  'although',
+  'because',
+  'unless',
+  'once',
+  'this',
+  'these',
+  'those',
+  'the',
+  'a',
+  'an',
+  'some',
+  'any',
+  'no',
+  'none',
+  'all',
+  'both',
+  'each',
+  'every',
+  'either',
+  'neither',
+  'another',
+  'other',
+  'such',
+  'what',
+  'whatever',
+  'himself',
+  'herself',
+  'itself',
+  'themselves',
+  'myself',
+  'yourself',
+  'ourselves',
+  'he',
+  'she',
+  'it',
+  'they',
+  'we',
+  'you',
+  'him',
+  'her',
+  'them',
+  'us',
+  'his',
+  'its',
+  'their',
+  'our',
+  'your',
+  'my',
+  // Auxiliaries, modals, copulas
+  'is',
+  'are',
+  'was',
+  'were',
+  'be',
+  'been',
+  'being',
+  'have',
+  'has',
+  'had',
+  'having',
+  'do',
+  'does',
+  'did',
+  'doing',
+  'done',
+  'will',
+  'would',
+  'shall',
+  'should',
+  'can',
+  'could',
+  'may',
+  'might',
+  'must',
+  'ought',
+  'need',
+  'used',
+  // Adverbs & quantifiers
+  'not',
+  'never',
+  'always',
+  'often',
+  'still',
+  'already',
+  'just',
+  'only',
+  'even',
+  'also',
+  'too',
+  'very',
+  'quite',
+  'rather',
+  'almost',
+  'nearly',
+  'hardly',
+  'scarcely',
+  'barely',
+  'merely',
+  'simply',
+  'again',
+  'back',
+  'away',
+  'here',
+  'there',
+  'now',
+  'then',
+  'today',
+  'tonight',
+  'tomorrow',
+  'yesterday',
+  'soon',
+  'later',
+  'twice',
+  'more',
+  'most',
+  'less',
+  'least',
+  'much',
+  'many',
+  'few',
+  'little',
+  'enough',
+  'together',
+  'apart',
+  'alone',
+  'instead',
+  'however',
+  'therefore',
+  'thus',
+  'hence',
+  'otherwise',
+  // Common irregular/narrative verbs that could follow a subject noun
+  'came',
+  'went',
+  'stood',
+  'lay',
+  'sat',
+  'kept',
+  'left',
+  'took',
+  'gave',
+  'made',
+  'said',
+  'told',
+  'asked',
+  'looked',
+  'seemed',
+  'appeared',
+  'remained',
+  'stayed',
+  'began',
+  'started',
+  'stopped',
+  'continued',
+  'turned',
+  'moved',
+  'passed',
+  'reached',
+  'brought',
+  'bought',
+  'sold',
+  'paid',
+  'cost',
+  'meant',
+  'felt',
+  'heard',
+  'saw',
+  'knew',
+  'thought',
+  'found',
+  'held',
+  'put',
+  'set',
+  'let',
+  'cut',
+  'shut',
+  'hit',
+  'ran',
+  'fell',
+  'grew',
+  'blew',
+  'drew',
+  'threw',
+  'flew',
+  'sank',
+  'rang',
+  'sang',
+  'drank',
+  'shrank',
+  'sprang',
+  'swam',
+  'won',
+  'lost',
+  'built',
+  'sent',
+  'spent',
+  'lent',
+  'bent',
+  'burnt',
+  'learnt',
+  'dealt',
+  'knelt',
+  'slept',
+  'swept',
+  'wept',
+  'crept',
+  'leapt',
+]);
+
+function isValidSiblingHeadNounCandidate(word: string): boolean {
+  const cleaned = word.replace(/(?:'s|’s|'|\u2019)$/i, '');
+  if (!/^[A-Za-z]{3,}$/.test(cleaned)) return false;
+  const lower = cleaned.toLowerCase();
+  if (NON_SIBLING_HEAD_FOLLOWERS.has(lower)) return false;
+
+  // Exclude regular past-tense/participle verb forms (-ed) and -ly adverbs
+  if (
+    lower.length >= 5 &&
+    lower.endsWith('ed') &&
+    !/^(?:bed|sled|shed|deed|seed|weed|reed|steed|creed|breed|speed|need|feed|biped|quadruped|watershed|woodshed|cowshed|toolshed|bloodshed)$/.test(
+      lower
+    )
+  ) {
+    return false;
+  }
+  if (
+    lower.length >= 5 &&
+    lower.endsWith('ly') &&
+    !/^(?:family|assembly|supply|monopoly|anomaly|ally|rally|tally|valley|folly|gully|belly|jelly|holly|lily|fly|reply)$/.test(
+      lower
+    )
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+export interface SiblingCompoundCollision {
+  glossaryItem: TerminologyMemoryItem;
+  englishTerm: string;
+  banglaTranslation: string;
+  sharedModifier: string;
+  glossaryHeadWord: string;
+  siblingHeadWord: string;
+  matchedSiblingPhrase: string;
+  coreSiblingPhrase: string;
+  paragraphIndices: number[];
+}
+
+/**
+ * PPH-4.4 Layer 2: Detects sibling compound noun phrases in `englishInput` that share a leading
+ * content modifier $M_1$ with a multi-word glossary compound $G = [M_1 \dots H_G]$ but have a
+ * different head noun $H_S \neq H_G$ (e.g., "Sylhet timber lease" / "timber brokerage" when the
+ * glossary contains "timber trust -> টিম্বার ট্রাস্ট").
+ */
+export function detectSiblingCompoundCollisions(
+  englishInput: string | ReadonlyArray<string>,
+  glossary: ReadonlyArray<TerminologyMemoryItem>
+): SiblingCompoundCollision[] {
+  const paragraphs =
+    typeof englishInput === 'string' ? [englishInput] : Array.from(englishInput ?? []);
+  if (paragraphs.length === 0 || !Array.isArray(glossary) || glossary.length === 0) {
+    return [];
+  }
+
+  const normalizedGlossary = normalizeGlossaryList(glossary);
+  const collisionsByKey = new Map<string, SiblingCompoundCollision>();
+
+  for (const item of normalizedGlossary) {
+    if (item.category === 'expression') continue;
+    const surfaceTerm = getEnglishSurfaceTerm(item.englishTerm);
+    if (!surfaceTerm) continue;
+
+    const rawTokens = surfaceTerm.split(/[\s-]+/).filter(Boolean);
+    const tokens =
+      rawTokens.length > 2 && /^(?:the|a|an)$/i.test(rawTokens[0])
+        ? rawTokens.slice(1)
+        : rawTokens;
+    if (tokens.length < 2) continue;
+    if (!tokens.every((t) => /^[A-Za-z][A-Za-z']*$/.test(t))) continue;
+
+    const glossaryHeadWord = tokens[tokens.length - 1].replace(/(?:'s|’s|'|\u2019)$/i, '');
+    const headFormsLower = new Set<string>(
+      generateConservativeEnglishWordForms(glossaryHeadWord, {
+        category: item.category,
+      }).map((f) => f.toLowerCase().replace(/(?:'s|’s|'|\u2019)$/i, ''))
+    );
+    headFormsLower.add(glossaryHeadWord.toLowerCase());
+
+    const internalModifierTokensLower = new Set<string>(
+      tokens.slice(0, -1).map((t) => t.toLowerCase().replace(/(?:'s|’s|'|\u2019)$/i, ''))
+    );
+
+    // Also include headwords of any registered aliases so aliases are never flagged as sibling collisions
+    for (const alias of extractRegisteredEnglishAliases(item)) {
+      const aliasTokens = alias.split(/[\s-]+/).filter(Boolean);
+      if (aliasTokens.length > 0) {
+        const aliasHead = aliasTokens[aliasTokens.length - 1].replace(
+          /(?:'s|’s|'|\u2019)$/i,
+          ''
+        );
+        for (const af of generateConservativeEnglishWordForms(aliasHead, {
+          category: item.category,
+        })) {
+          headFormsLower.add(af.toLowerCase().replace(/(?:'s|’s|'|\u2019)$/i, ''));
+        }
+        headFormsLower.add(aliasHead.toLowerCase());
+      }
+    }
+
+    // Candidate modifiers: the leading modifier token(s) of the compound
+    const candidateModifiers = Array.from(
+      new Set([tokens[0], tokens[tokens.length - 2]])
+    ).filter((mod) => {
+      const cleaned = mod.replace(/(?:'s|’s|'|\u2019)$/i, '').toLowerCase();
+      return cleaned.length >= 3 && !NON_COMPOUND_MODIFIER_WORDS.has(cleaned);
+    });
+
+    if (candidateModifiers.length === 0) continue;
+
+    for (let pIdx = 0; pIdx < paragraphs.length; pIdx++) {
+      const paraText = paragraphs[pIdx] ?? '';
+      if (!paraText.trim()) continue;
+
+      const itemOccurrences = findEnglishTermOccurrences(paraText, item);
+
+      for (const modToken of candidateModifiers) {
+        const modForms = generateConservativeEnglishWordForms(modToken)
+          .filter((f) => !f.includes("'") && !f.includes('’'))
+          .sort((a, b) => b.length - a.length)
+          .map(escapeRegExp);
+        if (modForms.length === 0) continue;
+
+        const pairRegex = new RegExp(
+          `\\b(${modForms.join('|')})[\\s\\-]+([A-Za-z][A-Za-z']*)\\b`,
+          'gi'
+        );
+        let match: RegExpExecArray | null;
+
+        while ((match = pairRegex.exec(paraText)) !== null) {
+          const matchStart = match.index;
+          const matchedPairText = match[0];
+          const matchEnd = matchStart + matchedPairText.length;
+
+          // Skip if this span overlaps an actual occurrence of the glossary term (or its registered alias)
+          if (itemOccurrences.some((occ) => spansOverlap(occ, { start: matchStart, end: matchEnd }))) {
+            continue;
+          }
+
+          const rawCandidateHead = match[2];
+          const cleanedCandidateHead = rawCandidateHead.replace(/(?:'s|’s|'|\u2019)$/i, '');
+          const candidateHeadLower = cleanedCandidateHead.toLowerCase();
+
+          // Must not be the glossary term's own headword or internal modifier token
+          if (
+            headFormsLower.has(candidateHeadLower) ||
+            internalModifierTokensLower.has(candidateHeadLower)
+          ) {
+            continue;
+          }
+
+          if (!isValidSiblingHeadNounCandidate(cleanedCandidateHead)) {
+            continue;
+          }
+
+          const coreSiblingPhrase = `${match[1]} ${cleanedCandidateHead}`;
+          let matchedSiblingPhrase = coreSiblingPhrase;
+
+          // Check if immediately preceded by a mid-sentence capitalized proper modifier (e.g., "Sylhet timber lease")
+          const prefixSlice = paraText.slice(Math.max(0, matchStart - 40), matchStart);
+          const properPrefixMatch = /(?:^|[A-Za-z0-9,;:—–-]\s+)([A-Z][a-z]{2,})\s+$/.exec(
+            prefixSlice
+          );
+          if (properPrefixMatch && properPrefixMatch[1]) {
+            const precedingWord = properPrefixMatch[1];
+            const precedingLower = precedingWord.toLowerCase();
+            if (
+              !NON_COMPOUND_MODIFIER_WORDS.has(precedingLower) &&
+              !NON_SIBLING_HEAD_FOLLOWERS.has(precedingLower)
+            ) {
+              matchedSiblingPhrase = `${precedingWord} ${coreSiblingPhrase}`;
+            }
+          }
+
+          const collisionKey = `${item.id}::${matchedSiblingPhrase.toLowerCase()}`;
+          const existing = collisionsByKey.get(collisionKey);
+          if (existing) {
+            if (!existing.paragraphIndices.includes(pIdx)) {
+              existing.paragraphIndices.push(pIdx);
+            }
+          } else {
+            collisionsByKey.set(collisionKey, {
+              glossaryItem: item,
+              englishTerm: surfaceTerm,
+              banglaTranslation: item.banglaTranslation,
+              sharedModifier: modToken.toLowerCase(),
+              glossaryHeadWord,
+              siblingHeadWord: cleanedCandidateHead,
+              matchedSiblingPhrase,
+              coreSiblingPhrase,
+              paragraphIndices: [pIdx],
+            });
+          }
+        }
+      }
+    }
+  }
+
+  return Array.from(collisionsByKey.values());
+}
+
 /**
  * Filters a project glossary down to the terms relevant to a specific translation chunk,
  * preventing prompt bloat on long novels while keeping matched terms and essential global terms.
@@ -1846,6 +2477,10 @@ export function filterGlossaryForChunk(
 
   const supplementalCandidates = normalizedGlossary.filter((item) => {
     if (matchedIds.has(item.id)) return false;
+    // PPH-4.4: Exclude unmatched multi-word compounds that collide with a sibling compound in the chunk/window
+    if (detectSiblingCompoundCollisions(combinedEnglish, [item]).length > 0) {
+      return false;
+    }
     if (includeLocked && item.lockedByUser) return true;
     if (
       includeNamesAndPlaces &&
@@ -2845,6 +3480,19 @@ export function lintParagraphTerminology(
     }
   }
 
+  // PASS 3 (PPH-4.4 Layer 3): Target-side ungrounded glossary injection guard (`compound_headword_bleed`).
+  // Detects when a multi-word glossary item's Bangla target appears in `banglaText` more times than its
+  // English source (or registered alias) appears in `englishText` AND `englishText` contains a sibling
+  // compound sharing its leading modifier with a different headword.
+  const bleedFindings = findUngroundedGlossaryInjections(
+    paragraph,
+    normalizedGlossary,
+    consumedBanglaSpans
+  );
+  for (const bf of bleedFindings) {
+    findings.push(bf);
+  }
+
   return {
     paragraphIndex: paragraph.index,
     findings,
@@ -2855,6 +3503,138 @@ export function lintParagraphTerminology(
   };
 }
 
+/**
+ * PPH-4.4 Layer 3: Target-side ungrounded glossary injection guard.
+ * Checks every multi-word glossary item: if its Bangla target occurs in the Bangla paragraph
+ * in excess of its English source/alias occurrences (including when the English source does not
+ * occur at all), AND the English paragraph contains a sibling compound phrase sharing a leading
+ * content modifier with a different headword, emits a `TerminologyLintFinding` with
+ * `code: 'compound_headword_bleed'`.
+ */
+export function findUngroundedGlossaryInjections(
+  paragraphOrEnglish: ParagraphPair | string,
+  glossaryOrBangla: ReadonlyArray<TerminologyMemoryItem> | string,
+  maybeGlossaryOrConsumed?:
+    | ReadonlyArray<TerminologyMemoryItem>
+    | ReadonlyArray<{ start: number; end: number }>,
+  maybeConsumedSpans?: ReadonlyArray<{ start: number; end: number }>
+): TerminologyLintFinding[] {
+  let paragraph: ParagraphPair;
+  let glossary: ReadonlyArray<TerminologyMemoryItem>;
+  let preConsumedBanglaSpans: ReadonlyArray<{ start: number; end: number }> | undefined;
+
+  if (typeof paragraphOrEnglish === 'string') {
+    paragraph = {
+      index: 0,
+      englishText: paragraphOrEnglish,
+      banglaText: typeof glossaryOrBangla === 'string' ? glossaryOrBangla : '',
+    };
+    glossary = Array.isArray(maybeGlossaryOrConsumed)
+      ? (maybeGlossaryOrConsumed as ReadonlyArray<TerminologyMemoryItem>)
+      : [];
+    preConsumedBanglaSpans = maybeConsumedSpans;
+  } else {
+    paragraph = paragraphOrEnglish;
+    glossary = Array.isArray(glossaryOrBangla) ? glossaryOrBangla : [];
+    preConsumedBanglaSpans = Array.isArray(maybeGlossaryOrConsumed)
+      ? (maybeGlossaryOrConsumed as ReadonlyArray<{ start: number; end: number }>)
+      : undefined;
+  }
+
+  const englishText = paragraph.englishText ?? '';
+  const banglaText = normalizeBanglaUnicode(paragraph.banglaText ?? '');
+  if (!englishText.trim() || !banglaText || paragraph.missingTranslation) {
+    return [];
+  }
+
+  const normalizedGlossary = normalizeGlossaryList(glossary);
+  const bleedFindings: TerminologyLintFinding[] = [];
+  const localConsumed: Array<{ start: number; end: number }> = preConsumedBanglaSpans
+    ? [...preConsumedBanglaSpans]
+    : [];
+
+  for (const item of normalizedGlossary) {
+    if (item.category === 'expression') continue;
+    const surfaceTerm = getEnglishSurfaceTerm(item.englishTerm);
+    const tokens = surfaceTerm.split(/[\s-]+/).filter(Boolean);
+    if (tokens.length < 2) continue;
+
+    const siblingCollisions = detectSiblingCompoundCollisions(englishText, [item]);
+    if (siblingCollisions.length === 0) continue;
+
+    // Also check if a >=3-word proper institutional term has a trailing >=2-word proper sub-phrase
+    // ending in the exact same headword
+    let englishOccurrences = findEnglishTermOccurrences(englishText, item);
+    if (englishOccurrences.length === 0 && tokens.length >= 3) {
+      const trailingSubPhrase = tokens.slice(1).join(' ');
+      if (/^[A-Z]/.test(tokens[1])) {
+        englishOccurrences = findSingleEnglishSurfaceTermOccurrences(
+          englishText,
+          trailingSubPhrase,
+          item
+        );
+      }
+    }
+
+    const candidateForms = expandApprovedBanglaCompoundForms(item.banglaTranslation);
+    const allTargetSpans: BanglaTermMatchSpan[] = [];
+    for (const form of candidateForms) {
+      const spans = findBanglaTermOccurrences(banglaText, form, {
+        banglaStem:
+          form === normalizeBanglaUnicode(item.banglaTranslation)
+            ? item.banglaStem
+            : undefined,
+        allowInflections: item.allowInflections,
+      });
+      for (const s of spans) {
+        if (!allTargetSpans.some((existing) => spansOverlap(existing, s))) {
+          allTargetSpans.push(s);
+        }
+      }
+    }
+    allTargetSpans.sort((a, b) => a.start - b.start || a.end - b.end);
+
+    if (allTargetSpans.length <= englishOccurrences.length) {
+      continue;
+    }
+
+    // Identify ungrounded target spans: either spans not already claimed in Pass 1A-1C,
+    // or excess spans beyond `englishOccurrences.length` when called standalone.
+    const ungroundedSpans = preConsumedBanglaSpans
+      ? allTargetSpans.filter((s) => !localConsumed.some((c) => spansOverlap(s, c)))
+      : allTargetSpans.slice(englishOccurrences.length);
+
+    if (ungroundedSpans.length === 0) {
+      continue;
+    }
+
+    const ungroundedSpan = ungroundedSpans[0];
+    localConsumed.push({ start: ungroundedSpan.start, end: ungroundedSpan.end });
+    const primaryCollision = siblingCollisions[0];
+
+    const description =
+      englishOccurrences.length === 0
+        ? `Paragraph ${paragraph.index + 1} [compound_headword_bleed]: Glossary target "${ungroundedSpan.matchedText}" (for "${item.englishTerm}") was injected into a paragraph containing sibling compound "${primaryCollision.matchedSiblingPhrase}" where "${item.englishTerm}" does not occur.`
+        : `Paragraph ${paragraph.index + 1} [compound_headword_bleed]: Glossary target "${ungroundedSpan.matchedText}" (for "${item.englishTerm}") appears ${allTargetSpans.length} times in Bangla while "${item.englishTerm}" occurs only ${englishOccurrences.length} time(s) in English alongside sibling compound "${primaryCollision.matchedSiblingPhrase}".`;
+
+    bleedFindings.push(
+      createFinding({
+        paragraph,
+        item,
+        matchedEnglishText: primaryCollision.matchedSiblingPhrase,
+        detectedBanglaVariant: ungroundedSpan.matchedText,
+        severity: 'high',
+        classification: 'definite_violation',
+        reason: 'unapproved_variant_used',
+        code: 'compound_headword_bleed',
+        description,
+      })
+    );
+  }
+
+  return bleedFindings;
+}
+
 function createFinding(params: {
   paragraph: ParagraphPair;
   item: TerminologyMemoryItem;
@@ -2863,6 +3643,7 @@ function createFinding(params: {
   severity: 'high' | 'medium' | 'low';
   classification: TerminologyFindingClassification;
   reason: TerminologyFindingReason;
+  code?: string;
   description: string;
 }): TerminologyLintFinding {
   const {
@@ -2873,18 +3654,25 @@ function createFinding(params: {
     severity,
     classification,
     reason,
+    code,
     description,
   } = params;
 
   const accepted = item.acceptedAlternatives ?? [];
   const acceptedHint =
     accepted.length > 0 ? ` (or accepted alternative: ${accepted.join(', ')})` : '';
-  const editorialGuidance = detectedBanglaVariant
-    ? `Replace "${detectedBanglaVariant}" with "${item.banglaTranslation}"${acceptedHint} while adjusting surrounding Bangla case endings if needed.`
-    : `Use "${item.banglaTranslation}"${acceptedHint} for "${matchedEnglishText}" if literal reference is intended.`;
+  const editorialGuidance =
+    code === 'compound_headword_bleed'
+      ? `Do not apply "${item.banglaTranslation}" (which belongs strictly to "${item.englishTerm}") to the sibling compound "${matchedEnglishText}"; translate the distinct head noun of "${matchedEnglishText}" accurately.`
+      : detectedBanglaVariant
+        ? `Replace "${detectedBanglaVariant}" with "${item.banglaTranslation}"${acceptedHint} while adjusting surrounding Bangla case endings if needed.`
+        : `Use "${item.banglaTranslation}"${acceptedHint} for "${matchedEnglishText}" if literal reference is intended.`;
 
   return {
-    id: `term-lint-p${paragraph.index}-${item.id}`,
+    id:
+      code === 'compound_headword_bleed'
+        ? `term-lint-p${paragraph.index}-${item.id}-bleed`
+        : `term-lint-p${paragraph.index}-${item.id}`,
     termId: item.id,
     englishTerm: item.englishTerm,
     expectedBangla: item.banglaTranslation,
@@ -2895,6 +3683,7 @@ function createFinding(params: {
     severity,
     classification,
     reason,
+    ...(code ? { code } : {}),
     matchedEnglishText,
     ...(detectedBanglaVariant ? { detectedBanglaVariant } : {}),
     englishExcerpt: buildExcerpt(paragraph.englishText),
