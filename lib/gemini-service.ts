@@ -16,6 +16,9 @@ import type {
 } from './types';
 import { formatMemoryPromptBlock, formatStyleDirectiveBlock } from './chunker';
 import {
+  CONTEXTUAL_VOCABULARY_GUARD_RULES,
+  applyContextualVocabularyRepairs,
+  collectParagraphStage4QualityIssues,
   detectSiblingCompoundCollisions,
   extractContextualSenseKey,
   extractEnglishSurfaceAndSense,
@@ -25,6 +28,7 @@ import {
   formatGlossaryForPrompt,
   getVerificationIssueScorePenalty,
   hydrateProjectGlossary,
+  isCraftFounderEnglishContext,
   lintChapterNumericalConsistency,
   lintChapterTerminology,
   lintParagraphNumericalConsistency,
@@ -36,6 +40,9 @@ import {
   normalizeStage5IssueType,
   normalizeTerminologyItem,
   parseEnglishNumericalExpressions,
+  repairCraftFounderBangla,
+  repairHomophoneAndTypoCollisions,
+  resolveUngroundedInlineOrDoublets,
   separateCanonicalAndExplanatoryBangla,
   splitTextIntoStage1Windows,
   validateStage3DiscoveredTerms,
@@ -401,6 +408,11 @@ export function sanitizeSpecialistFalseFriendTranslation(
     /(?:কার্নিশ|নর্দমা)/u.test(normBn)
   ) {
     normBn = /\broof/i.test(normEn) ? 'ছাদের জলনিকাশি নালা' : 'জলনিকাশি নালা';
+  }
+
+  // 4. PPH-4.5C (CV-04): Craft/foundry "-founder" (e.g. glass-founder, bronze-founder, founder-mark) -> "প্রতিষ্ঠাতা" (institutional founder) instead of "ঢালাইকর" / "ঢালাই-চিহ্ন"
+  if (isCraftFounderEnglishContext(normEn) && /প্রতিষ্ঠাতা/u.test(normBn)) {
+    normBn = repairCraftFounderBangla(normEn, normBn);
   }
 
   return normalizeBanglaUnicode(normBn);
@@ -2023,6 +2035,59 @@ function buildCompoundNounBoundaryPromptBlock(
   return `[COMPOUND-NOUN HEADWORD BOUNDARY RULE]:\n${lines.join('\n')}`;
 }
 
+function buildContextualVocabularyPromptBlock(
+  englishParagraphs: ReadonlyArray<string>
+): string {
+  const joined = englishParagraphs.join('\n\n');
+  if (!joined.trim()) return '';
+
+  const hints: string[] = [];
+
+  if (/\bcuffs?\b/i.test(joined)) {
+    hints.push(
+      '- Garment "cuff(s)" (of a shirt, coat, sleeve, or mackintosh) is "আস্তিন" / "হাতার আস্তিন" / "হাতার মুড়ি" — NEVER phonetic false-friend "কফি" (coffee).'
+    );
+  }
+  if (
+    /\b(?:pocket-knife|penknife|jackknife|knife|knives|blade)\b/i.test(joined)
+  ) {
+    hints.push(
+      '- Spell knife/pocket-knife in Bangla with unaspirated চ as "চাকু" / "পকেট-চাকু" / "ছুরি" — NEVER typo "ছাকু" / "পকেট-ছাকু" (strainer).'
+    );
+  }
+  for (const rule of CONTEXTUAL_VOCABULARY_GUARD_RULES) {
+    if (!rule.matchesEnglishContext(joined)) continue;
+    if (rule.id === 'dictate_speech_vs_write') {
+      hints.push(
+        '- English "dictate / dictated" (speaking a letter, receipt, or clauses aloud for another person to write) must be rendered as "মুখে বলে লেখানো" / "বলে লিখে নেওয়া" — NEVER "লিখে দিয়েছিলাম / লিখে দেবেন" (which means writing it oneself).'
+      );
+    } else if (rule.id === 'linger_tarry_vs_hide') {
+      hints.push(
+        '- English "linger / lingered" means tarried or remained behind slowly ("দেরি করা" / "থেমে থাকা" / "রয়ে যাওয়া") — NEVER "লুকিয়ে থাকা / লুকিয়ে ছিল" (which means hiding in concealment).'
+      );
+    } else if (rule.id === 'metallurgical_temper') {
+      hints.push(
+        '- Metallurgical "temper" of iron, steel, bronze, or chain links refers to metal hardness/tempering ("কাঠিন্য" / "পান দেত্তয়া") — NEVER psychological mood ("মেজাজ").'
+      );
+    } else if (rule.id === 'craft_founder_vs_inst_founder') {
+      hints.push(
+        '- In glassmaking, metalworking, or bell-casting contexts, "founder" / "-founder" means a caster/melter ("ঢালাইকর" / "ঢালাই-কারিগর", e.g., "কাঁচ-ঢালাইকর") — NEVER institutional founder ("প্রতিষ্ঠাতা").'
+      );
+    } else if (rule.id === 'bone_dry_preserves_dryness') {
+      hints.push(
+        '- English "bone-dry" must preserve explicit physical dryness ("খটখটে শুকনো" / "শুষ্ক") in Bangla — never drop the dryness sense during stylistic editing.'
+      );
+    } else if (rule.id === 'digital_chat_pls') {
+      hints.push(
+        '- In digital/WhatsApp/SMS chat messages, colloquial abbreviation "pls / plz" should be rendered as conversational "প্লিজ" rather than formal "দয়া করে".'
+      );
+    }
+  }
+
+  if (hints.length === 0) return '';
+  return `[CONTEXTUAL VOCABULARY & HOMOPHONE PRECISION RULES]:\n${hints.join('\n')}`;
+}
+
 /**
  * Stage 3 — Faithful Literary Translation (Chunk-Aware & Paragraph-Aligned with Discovery Validation)
  */
@@ -2079,6 +2144,9 @@ export async function translateChunkFaithfully(params: {
     params.paragraphs,
     hydratedSnapshotGlossary
   );
+  const contextualVocabularyBlock = buildContextualVocabularyPromptBlock(
+    params.paragraphs
+  );
 
   const prompt = `Translate the following ${params.paragraphs.length} English literary paragraphs into exceptionally natural, fluent, expressive Bangla (বাংলা).
 
@@ -2088,7 +2156,7 @@ ${styleBlock}
 
 ${memoryBlock}
 ${previousChunkSection}
-${crossChunkContinuityBlock}${verbatimAndMeasurementBlock ? `\n${verbatimAndMeasurementBlock}` : ''}${compoundNounBoundaryBlock ? `\n${compoundNounBoundaryBlock}` : ''}
+${crossChunkContinuityBlock}${verbatimAndMeasurementBlock ? `\n${verbatimAndMeasurementBlock}` : ''}${compoundNounBoundaryBlock ? `\n${compoundNounBoundaryBlock}` : ''}${contextualVocabularyBlock ? `\n${contextualVocabularyBlock}` : ''}
 
 MANDATORY LITERARY TRANSLATION RULES:
 1. NATIVE LITERARY BANGLA & CLAUSE RESTRUCTURING (প্রাকৃতিক বাক্যগঠন ও চলিত বাংলা):
@@ -2346,13 +2414,18 @@ export function splitParagraphsIntoStage4Windows(
 export function buildStage4WindowLintGuidanceBlock(params: {
   numericalIssues: VerificationIssue[];
   glossaryIssues: VerificationIssue[];
+  qualityControlIssues?: VerificationIssue[];
   ambiguousNumericalDescriptions?: Array<{
     paragraphIndex: number;
     description: string;
   }>;
   windowStartParagraphIndex: number;
 }): string {
-  const allFindings = [...params.numericalIssues, ...params.glossaryIssues];
+  const allFindings = [
+    ...params.numericalIssues,
+    ...params.glossaryIssues,
+    ...(params.qualityControlIssues ?? []),
+  ];
   const ambiguousItems = params.ambiguousNumericalDescriptions ?? [];
   if (allFindings.length === 0 && ambiguousItems.length === 0) {
     return '';
@@ -2364,7 +2437,11 @@ export function buildStage4WindowLintGuidanceBlock(params: {
       typeof issue.paragraphIndex === 'number' ? issue.paragraphIndex : 0;
     const localIdx = Math.max(0, globalIdx - params.windowStartParagraphIndex);
     const kind =
-      issue.type === 'terminology' ? 'GLOSSARY CHECK' : 'NUMERICAL CHECK';
+      issue.type === 'terminology'
+        ? 'GLOSSARY CHECK'
+        : issue.id.startsWith('pph45')
+          ? 'CONTEXTUAL & QUALITY CHECK'
+          : 'NUMERICAL CHECK';
     const excerptInfo =
       issue.englishExcerpt || issue.banglaExcerpt
         ? ` [English: "${issue.englishExcerpt ?? ''}" | Draft Bangla: "${issue.banglaExcerpt ?? ''}"]`
@@ -2569,6 +2646,19 @@ export function sanitizeStage4EditedParagraph(params: {
     }
   }
 
+  // 5. PPH-4.5A: Deterministically collapse ungrounded inline "বা" doublets (A1 stem-repeat & A2 explicit table)
+  edited = resolveUngroundedInlineOrDoublets(english, edited);
+
+  // 6. PPH-4.5B: Deterministically repair Step 1 local-garment-decisive cuff homophones and knife aspiration typos
+  edited = repairHomophoneAndTypoCollisions(english, edited);
+
+  // 7. PPH-4.5C: Enforce contextual vocabulary guard rules (draft-revert for CV-01/02/05; deterministic replace for CV-03/04/06)
+  edited = applyContextualVocabularyRepairs({
+    englishParagraph: english,
+    draftBanglaParagraph: draft,
+    editedBanglaParagraph: edited,
+  });
+
   return edited;
 }
 
@@ -2733,9 +2823,13 @@ export async function runLiteraryEditingPass(params: {
     }));
     const numericalLint = lintChapterNumericalConsistency(windowPairs);
     const glossaryLint = lintChapterTerminology(windowPairs, windowFilteredGlossary);
+    const qualityControlIssues = windowPairs.flatMap((pair) =>
+      collectParagraphStage4QualityIssues(pair)
+    );
     const lintGuidanceBlock = buildStage4WindowLintGuidanceBlock({
       numericalIssues: numericalLint.issues,
       glossaryIssues: glossaryLint.issues,
+      qualityControlIssues,
       ambiguousNumericalDescriptions: numericalLint.ambiguousComparisons.map(
         (a) => ({
           paragraphIndex: a.paragraphIndex,
@@ -2768,13 +2862,16 @@ export async function runLiteraryEditingPass(params: {
       win.englishParagraphs,
       hydratedGlossary
     );
+    const contextualVocabularyBlock = buildContextualVocabularyPromptBlock(
+      win.englishParagraphs
+    );
 
     const prompt = `Run Stage 4 Literary Editing on the following Bangla translation draft.
 ${windowHeader}${storyContextBlock ? `\n${storyContextBlock}\n` : ''}
 ${styleBlock}
 
 ${memoryBlock}
-${precedingContinuitySection}${lintGuidanceBlock ? `${lintGuidanceBlock}\n` : ''}${verbatimAndMeasurementBlock ? `${verbatimAndMeasurementBlock}\n` : ''}${compoundNounBoundaryBlock ? `${compoundNounBoundaryBlock}\n` : ''}
+${precedingContinuitySection}${lintGuidanceBlock ? `${lintGuidanceBlock}\n` : ''}${verbatimAndMeasurementBlock ? `${verbatimAndMeasurementBlock}\n` : ''}${compoundNounBoundaryBlock ? `${compoundNounBoundaryBlock}\n` : ''}${contextualVocabularyBlock ? `${contextualVocabularyBlock}\n` : ''}
 EDITORIAL OBJECTIVES & LITERARY BANGLA CRAFT PRINCIPLES:
 1. NATURAL BANGLA CLAUSE RESTRUCTURING & RHYTHM (ছন্দ ও প্রবাহ):
    - Stage 4 is an editorial refinement pass, NOT a mandatory rewriting stage: elevate sentence flow, reading cadence, and idiomatic চলিত বাংলা where the DRAFT BANGLA is genuinely awkward, unnatural, or translationese ("আক্ষরিক অনুবাদ-গন্ধ"), while leaving sentences that are already accurate, natural, and true to the character's voice unchanged. Never rewrite a sentence merely to demonstrate stylistic activity, and never sacrifice semantic fidelity for elegance.

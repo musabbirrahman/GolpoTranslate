@@ -5029,9 +5029,42 @@ export function mergeVerificationReportWithTerminologyLint(
       };
     });
 
+  // Build deterministic PPH-4.5 Stage 4 Quality Control VerificationIssues (4.5A doublets, 4.5B homophones/typos, 4.5C contextual vocabulary)
+  const reconciledQualityControlIssues: VerificationIssue[] = [];
+  for (const para of paragraphs) {
+    if (!para.englishText?.trim() || !para.banglaText?.trim() || para.missingTranslation) {
+      continue;
+    }
+    const paragraphContentFingerprint = computeParagraphContentFingerprint(
+      para.englishText,
+      para.banglaText
+    );
+    const qcIssues = collectParagraphStage4QualityIssues(para);
+    for (const qcIss of qcIssues) {
+      const findingSignature =
+        qcIss.findingSignature ?? `deterministic_lint::pph45::${qcIss.id}`;
+      const matchingPreviousDet = previousDeterministicIssues.find(
+        (prev) =>
+          prev.source === 'deterministic_lint' &&
+          prev.paragraphIndex === para.index &&
+          Boolean(paragraphContentFingerprint) &&
+          prev.paragraphContentFingerprint === paragraphContentFingerprint &&
+          prev.findingSignature === findingSignature
+      );
+      reconciledQualityControlIssues.push({
+        ...qcIss,
+        id: matchingPreviousDet?.id ?? qcIss.id,
+        resolved: matchingPreviousDet ? Boolean(matchingPreviousDet.resolved) : false,
+        paragraphContentFingerprint,
+        findingSignature,
+      });
+    }
+  }
+
   const reconciledDeterministicIssues: VerificationIssue[] = [
     ...reconciledGlossaryIssues,
     ...reconciledNumericalIssues,
+    ...reconciledQualityControlIssues,
   ];
 
   // Determine which AI issues to keep based on `mode`
@@ -13202,3 +13235,1473 @@ export function lintChapterNumericalConsistency(
   };
 }
 
+// ============================================================================
+// PPH-4.5A — UNGROUNDED INLINE "বা" DOUBLET DETECTION & RESOLUTION
+// ============================================================================
+
+export interface InlineDoubletIssue {
+  pattern: 'stem_repeat_ba' | 'loanword_gloss_ba';
+  matchedBangla: string;
+  firstToken: string;
+  secondToken: string;
+  collapsedReplacement?: string;
+  description: string;
+}
+
+const ENGLISH_DISJUNCTIVE_OR_TRIGGER_REGEX =
+  /\b(?:or|nor|either|whether|otherwise)\b|\/|\b(?:more\s+or\s+less|sooner\s+or\s+later|one\s+or\s+two|two\s+or\s+three)\b/i;
+
+const BANGLA_IDIOMATIC_OR_PARTICLE_BA_REGEX =
+  /(?:^|[^\u0980-\u09FF])(?:কী\s+বা|কে\s+বা|কেনই\s+বা|কারই\s+বা|কোথায়\s+বা|কোথায়\s+বা|কীভাবেই\s+বা|আজ\s+বা\s+কাল|কম\s+বা\s+বেশি|এক\s+বা\s+একাধিক|দু-একটা\s+বা|একটা\s+বা\s+দুটো)(?=$|[^\u0980-\u09FF])/u;
+
+/**
+ * Closed A2 loanword and native gloss stem lists (Addendum 2: বব and পিন্ড are NOT added here;
+ * they are recognized exclusively via exact-pair matching against A2_EXPLICIT_RESOLUTION_TABLE).
+ */
+const A2_CLOSED_LOANWORD_STEMS: ReadonlySet<string> = new Set([
+  'ক্র্যাডল',
+  'টিক',
+  'লিন্টেল',
+  'শাটার',
+  'ক্যানভাস',
+  'বোল্ট',
+  'লিভার',
+]);
+
+const A2_CLOSED_NATIVE_GLOSS_STEMS: ReadonlySet<string> = new Set([
+  'দোলনা',
+  'কাঁপুনি',
+  'ঝাঁপ',
+  'ছিটকিনি',
+]);
+
+interface A2ExplicitResolutionPair {
+  id: string;
+  loanwordStems: ReadonlyArray<string>;
+  glossStems: ReadonlyArray<string>;
+  keepStem: string;
+}
+
+/**
+ * Explicit A2 resolution mapping table (Addendum 1 & Addendum 2):
+ * - tic -> keep টিক
+ * - cradle -> keep দোলনা
+ * - pendulum bob -> keep বব (recognized by exact-pair table lookup only)
+ * Any A2 pair not in this table is flagged only and never blindly collapsed.
+ */
+const A2_EXPLICIT_RESOLUTION_TABLE: ReadonlyArray<A2ExplicitResolutionPair> = [
+  {
+    id: 'tic',
+    loanwordStems: ['টিক'],
+    glossStems: ['কাঁপুনি'],
+    keepStem: 'টিক',
+  },
+  {
+    id: 'cradle',
+    loanwordStems: ['ক্র্যাডল'],
+    glossStems: ['দোলনা'],
+    keepStem: 'দোলনা',
+  },
+  {
+    id: 'pendulum_bob',
+    loanwordStems: ['বব'],
+    glossStems: ['পিন্ড', 'পিণ্ড'],
+    keepStem: 'বব',
+  },
+];
+
+const BANGLA_A2_SUFFIXES = [
+  'গুলোর',
+  'গুলির',
+  'গুলো',
+  'গুলি',
+  'টার',
+  'টির',
+  'টা',
+  'টি',
+  'য়ের',
+  'য়ের',
+  'ের',
+  'তে',
+  'য়',
+  'য়',
+  'ে',
+  'র',
+] as const;
+
+function splitBanglaStemAndSuffix(
+  token: string,
+  candidateStems: Iterable<string>
+): { stem: string; suffix: string } | null {
+  const normToken = normalizeBanglaUnicode(token);
+  for (const rawCandidate of candidateStems) {
+    const normStem = normalizeBanglaUnicode(rawCandidate);
+    if (normToken === normStem) {
+      return { stem: rawCandidate, suffix: '' };
+    }
+    for (const suf of BANGLA_A2_SUFFIXES) {
+      const normSuf = normalizeBanglaUnicode(suf);
+      if (normToken === normStem + normSuf) {
+        return { stem: rawCandidate, suffix: suf };
+      }
+    }
+  }
+  return null;
+}
+
+function applySuffixToKeptBanglaStem(keepStem: string, suffix: string): string {
+  if (!suffix) return keepStem;
+  // If kept stem ends with -া (e.g. দোলনা) and the dropped consonant-ending stem had locative -ে (e.g. ক্র্যাডলে),
+  // attach -য় (দোলনায়) so Bangla vowel-stem inflection stays grammatical while preserving "দোলনা" as prefix.
+  if (keepStem.endsWith('া') && suffix === 'ে') {
+    return `${keepStem}য়`;
+  }
+  if (keepStem.endsWith('া') && suffix === 'ের') {
+    return `${keepStem}র`;
+  }
+  return `${keepStem}${suffix}`;
+}
+
+/**
+ * Checks whether an English source paragraph has zero disjunctive triggers so ungrounded
+ * Bangla "বা" doublets can be inspected safely.
+ */
+function shouldSkipInlineDoubletCheck(
+  englishParagraph: string,
+  banglaParagraph: string
+): boolean {
+  if (!englishParagraph?.trim() || !banglaParagraph?.trim()) {
+    return true;
+  }
+  if (ENGLISH_DISJUNCTIVE_OR_TRIGGER_REGEX.test(englishParagraph)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Detects ungrounded inline "X বা Y" translator doublets when the English source paragraph
+ * contains no disjunctive triggers ("or", "nor", "either", "whether", "otherwise", "/", etc.):
+ * - Pattern A1 (`stem_repeat_ba`): "X বা X-এর [Noun]" -> collapses to "X-এর [Noun]".
+ * - Pattern A2 (`loanword_gloss_ba`): Loanword + native gloss connected by "বা".
+ *   Collapses deterministically ONLY when the pair is in `A2_EXPLICIT_RESOLUTION_TABLE`
+ *   (tic -> টিক, cradle -> দোলনা, pendulum bob -> বব); any other closed-list A2 pair is
+ *   flagged only (`collapsedReplacement: undefined`).
+ */
+export function findUngroundedInlineOrDoublets(
+  englishParagraph: string,
+  banglaParagraph: string
+): InlineDoubletIssue[] {
+  if (shouldSkipInlineDoubletCheck(englishParagraph, banglaParagraph)) {
+    return [];
+  }
+
+  const issues: InlineDoubletIssue[] = [];
+  const consumedSpans: Array<{ start: number; end: number }> = [];
+
+  // 1. Pattern A1: Stem-Repeat Doublet ("X বা X-এর [Noun]")
+  const a1Regex =
+    /(^|[^\u0980-\u09FF])([\u0980-\u09FF]{3,})\s+বা\s+\2(ের|র|য়ের|য়ের|গুলো|গুলি|টা|টি)\s+([\u0980-\u09FF]{2,})(?=$|[^\u0980-\u09FF])/gu;
+
+  let m: RegExpExecArray | null;
+  while ((m = a1Regex.exec(banglaParagraph)) !== null) {
+    const leading = m[1] ?? '';
+    const stem = m[2];
+    const suffix = m[3];
+    const followingNoun = m[4];
+    const matchStart = m.index + leading.length;
+    const matchedBangla = `${stem} বা ${stem}${suffix} ${followingNoun}`;
+    const matchEnd = matchStart + matchedBangla.length;
+
+    const contextWindow = banglaParagraph.slice(
+      Math.max(0, matchStart - 12),
+      Math.min(banglaParagraph.length, matchEnd + 12)
+    );
+    if (BANGLA_IDIOMATIC_OR_PARTICLE_BA_REGEX.test(contextWindow)) {
+      continue;
+    }
+
+    const collapsedReplacement = `${stem}${suffix} ${followingNoun}`;
+    consumedSpans.push({ start: matchStart, end: matchEnd });
+    issues.push({
+      pattern: 'stem_repeat_ba',
+      matchedBangla,
+      firstToken: stem,
+      secondToken: `${stem}${suffix}`,
+      collapsedReplacement,
+      description: `Ungrounded stem-repeat inline doublet "${matchedBangla}" without English "or"; collapse to "${collapsedReplacement}".`,
+    });
+  }
+
+  // 2. Pattern A2: Loanword + Native Gloss Doublet ("W1 বা W2")
+  const allClosedStems = new Set<string>([
+    ...A2_CLOSED_LOANWORD_STEMS,
+    ...A2_CLOSED_NATIVE_GLOSS_STEMS,
+  ]);
+  for (const entry of A2_EXPLICIT_RESOLUTION_TABLE) {
+    for (const s of entry.loanwordStems) allClosedStems.add(s);
+    for (const s of entry.glossStems) allClosedStems.add(s);
+  }
+
+  const a2Regex =
+    /(^|[^\u0980-\u09FF])([\u0980-\u09FF]{2,})\s+বা\s+([\u0980-\u09FF]{2,})(?=$|[^\u0980-\u09FF])/gu;
+
+  while ((m = a2Regex.exec(banglaParagraph)) !== null) {
+    const leading = m[1] ?? '';
+    const firstToken = m[2];
+    const secondToken = m[3];
+    const matchStart = m.index + leading.length;
+    const matchedBangla = `${firstToken} বা ${secondToken}`;
+    const matchEnd = matchStart + matchedBangla.length;
+
+    if (
+      consumedSpans.some(
+        (sp) => matchStart < sp.end && matchEnd > sp.start
+      )
+    ) {
+      continue;
+    }
+
+    const contextWindow = banglaParagraph.slice(
+      Math.max(0, matchStart - 12),
+      Math.min(banglaParagraph.length, matchEnd + 12)
+    );
+    if (BANGLA_IDIOMATIC_OR_PARTICLE_BA_REGEX.test(contextWindow)) {
+      continue;
+    }
+
+    const parsedFirst = splitBanglaStemAndSuffix(firstToken, allClosedStems);
+    const parsedSecond = splitBanglaStemAndSuffix(secondToken, allClosedStems);
+    if (!parsedFirst || !parsedSecond) {
+      continue;
+    }
+
+    const normStem1 = normalizeBanglaUnicode(parsedFirst.stem);
+    const normStem2 = normalizeBanglaUnicode(parsedSecond.stem);
+    if (normStem1 === normStem2) {
+      continue;
+    }
+
+    // Check explicit A2 resolution mapping table first (includes exact-pair lookup for বব / পিন্ড)
+    const explicitEntry = A2_EXPLICIT_RESOLUTION_TABLE.find((entry) => {
+      const loanMatches1 = entry.loanwordStems.some(
+        (s) => normalizeBanglaUnicode(s) === normStem1
+      );
+      const glossMatches2 = entry.glossStems.some(
+        (s) => normalizeBanglaUnicode(s) === normStem2
+      );
+      const glossMatches1 = entry.glossStems.some(
+        (s) => normalizeBanglaUnicode(s) === normStem1
+      );
+      const loanMatches2 = entry.loanwordStems.some(
+        (s) => normalizeBanglaUnicode(s) === normStem2
+      );
+      return (loanMatches1 && glossMatches2) || (glossMatches1 && loanMatches2);
+    });
+
+    if (explicitEntry) {
+      const effectiveSuffix = parsedSecond.suffix || parsedFirst.suffix;
+      const collapsedReplacement = applySuffixToKeptBanglaStem(
+        explicitEntry.keepStem,
+        effectiveSuffix
+      );
+      issues.push({
+        pattern: 'loanword_gloss_ba',
+        matchedBangla,
+        firstToken,
+        secondToken,
+        collapsedReplacement,
+        description: `Ungrounded loanword+gloss doublet "${matchedBangla}" without English "or"; collapse to "${collapsedReplacement}".`,
+      });
+      continue;
+    }
+
+    // Otherwise check whether (stem1, stem2) is a closed-list A2 loanword+gloss pair not in the explicit table
+    const closedLoan1 = Array.from(A2_CLOSED_LOANWORD_STEMS).some(
+      (s) => normalizeBanglaUnicode(s) === normStem1
+    );
+    const closedGloss2 = Array.from(A2_CLOSED_NATIVE_GLOSS_STEMS).some(
+      (s) => normalizeBanglaUnicode(s) === normStem2
+    );
+    const closedGloss1 = Array.from(A2_CLOSED_NATIVE_GLOSS_STEMS).some(
+      (s) => normalizeBanglaUnicode(s) === normStem1
+    );
+    const closedLoan2 = Array.from(A2_CLOSED_LOANWORD_STEMS).some(
+      (s) => normalizeBanglaUnicode(s) === normStem2
+    );
+
+    if ((closedLoan1 && closedGloss2) || (closedGloss1 && closedLoan2)) {
+      // Flagged only, never blindly collapsed
+      issues.push({
+        pattern: 'loanword_gloss_ba',
+        matchedBangla,
+        firstToken,
+        secondToken,
+        collapsedReplacement: undefined,
+        description: `Ungrounded loanword+gloss doublet "${matchedBangla}" without English "or" (flag-only; pair not in explicit collapse table).`,
+      });
+    }
+  }
+
+  return issues;
+}
+
+/**
+ * Deterministically resolves ungrounded inline "বা" doublets in `banglaParagraph`
+ * when `englishParagraph` has no disjunctive trigger ("or", "nor", "either", "whether", "otherwise", "/").
+ * Collapses Pattern A1 stem-repeat doublets and Pattern A2 pairs present in the explicit resolution table;
+ * leaves any non-table A2 pair untouched.
+ */
+export function resolveUngroundedInlineOrDoublets(
+  englishParagraph: string,
+  banglaParagraph: string
+): string {
+  if (shouldSkipInlineDoubletCheck(englishParagraph, banglaParagraph)) {
+    return banglaParagraph;
+  }
+
+  const issues = findUngroundedInlineOrDoublets(
+    englishParagraph,
+    banglaParagraph
+  );
+  if (issues.length === 0) {
+    return banglaParagraph;
+  }
+
+  let resolved = banglaParagraph;
+  for (const issue of issues) {
+    if (issue.collapsedReplacement) {
+      resolved = resolved.replace(
+        issue.matchedBangla,
+        issue.collapsedReplacement
+      );
+    }
+  }
+  return resolved;
+}
+
+// ============================================================================
+// PPH-4.5B — HOMOPHONES AND TYPOS (CUFF RULE §2 + ORTHOGRAPHIC TYPO TABLE)
+// ============================================================================
+
+export interface HomophoneAndTypoCollisionIssue {
+  kind:
+    | 'cuff_coffee_homophone'
+    | 'knife_strainer_typo'
+    | 'quoin_coin_homophone';
+  matchedBangla: string;
+  matchIndex: number;
+  association:
+    | 'local_garment_decisive'
+    | 'positional'
+    | 'ambiguous'
+    | 'orthographic_typo'
+    | 'false_friend';
+  suggestedRepair?: string;
+  description: string;
+}
+
+export interface OrthographicTypoRepairRule {
+  id: 'knife_chaku_vs_chhaku' | 'quoin_coin_homophone';
+  englishRequiredRegex: RegExp;
+  englishExclusionRegex?: RegExp;
+  banglaTypoRegex: RegExp;
+  flagOnly: boolean;
+  computeReplacement?: (matchedToken: string) => string;
+}
+
+export const ORTHOGRAPHIC_TYPO_REPAIRS: ReadonlyArray<OrthographicTypoRepairRule> =
+  [
+    {
+      id: 'knife_chaku_vs_chhaku',
+      englishRequiredRegex:
+        /\b(?:pocket-knife|penknife|jackknife|knife|knives|blade)\b/i,
+      englishExclusionRegex: /\b(?:strainer|sieve|colander)\b/i,
+      banglaTypoRegex:
+        /(^|[^\u0980-\u09FF])(পকেট-ছাকু(?:র|টা|টি|তে|গুলো|গুলি)?|ছাকু(?:র|টা|টি|তে|গুলো|গুলি)?)(?=$|[^\u0980-\u09FF])/gu,
+      flagOnly: false,
+      computeReplacement: (matchedToken: string): string =>
+        matchedToken.replace(/ছাকু/gu, 'চাকু'),
+    },
+    {
+      id: 'quoin_coin_homophone',
+      englishRequiredRegex: /\bquoins?\b/i,
+      englishExclusionRegex: /\bcoins?\b/i,
+      banglaTypoRegex:
+        /(^|[^\u0980-\u09FF])(কয়েন(?:গুলো|গুলি|টা|টি|ের|ে)?|কয়েন(?:গুলো|গুলি|টা|টি|ের|ে)?)(?=$|[^\u0980-\u09FF])/gu,
+      flagOnly: true,
+    },
+  ];
+
+/**
+ * Weak words around "কফি" that are skipped and never decide alone (§2 Step 1).
+ */
+const CUFF_WEAK_MODIFIER_WORDS: ReadonlySet<string> = new Set([
+  'কালো',
+  'গরম',
+  'ঠান্ডা',
+]);
+
+/**
+ * Decisive coffee evidence words (§2 Step 1):
+ * কাপ, পিরিচ, তেতো, consumption-verb stems খা-, পান কর-, চুমুক দে-
+ */
+const CUFF_DECISIVE_COFFEE_WORDS: ReadonlySet<string> = new Set([
+  'কাপ',
+  'কাপে',
+  'কাপের',
+  'কাপটা',
+  'কাপটি',
+  'পিরিচ',
+  'পিরিচে',
+  'পিরিচের',
+  'পিরিচটা',
+  'পিরিচটি',
+  'তেতো',
+  'খাওয়া',
+  'খাওয়া',
+  'খেয়ে',
+  'খেয়ে',
+  'খেল',
+  'খেলেন',
+  'খায়',
+  'খায়',
+  'খান',
+  'খাবে',
+  'খাবেন',
+  'খাচ্ছিল',
+  'খাচ্ছিলেন',
+  'খেতে',
+  'চুমুক',
+]);
+
+const CUFF_CONSUMPTION_COMPOUND_HEADS: ReadonlySet<string> = new Set([
+  'পান',
+  'চুমুক',
+]);
+
+const CUFF_CONSUMPTION_AUX_REGEX =
+  /^(?:কর|করা|করে|করল|করলেন|করছে|করছেন|করতে|করেছিল|করেছিলেন|দেওয়া|দেওয়া|দিয়ে|দিয়ে|দিল|দিলেন|দিচ্ছে|দিচ্ছেন|দিতে)$/u;
+
+/**
+ * Decisive garment evidence words (§2 Step 1):
+ * ছেঁড়া, পশমি, সুতির, ম্যাকিন্টশের, শার্টের, কোটের, হাতার, verb stems পর-, বোতাম লাগা-
+ */
+const CUFF_DECISIVE_GARMENT_WORDS: ReadonlySet<string> = new Set([
+  'ছেঁড়া',
+  'ছেঁড়া',
+  'পশমি',
+  'পশমী',
+  'সুতির',
+  'সুতি',
+  'ম্যাকিন্টশের',
+  'ম্যাকিন্টশ',
+  'শার্টের',
+  'শার্ট',
+  'কোটের',
+  'কোট',
+  'হাতার',
+  'পরা',
+  'পরল',
+  'পরলেন',
+  'পরেছে',
+  'পরেছেন',
+  'পরেছিল',
+  'পরেছিলেন',
+  'পরতে',
+  'বোতাম',
+]);
+
+const CUFF_GARMENT_AUX_REGEX =
+  /^(?:লাগা|লাগানো|লাগিয়ে|লাগিয়ে|লাগাল|লাগালেন|লাগাতে|লাগাচ্ছিল|লাগাচ্ছিলেন)$/u;
+
+/**
+ * Occurrence-boundary tokens (§2 Step 1):
+ * Either another কফি-family occurrence OR a correct cuff rendering
+ * (আস্তিন, আস্তিনে, আস্তিনের, আস্তিনটা, আস্তিনটি, হাতার আস্তিন, কাফ, কাফে, হাতার কাফে, হাতার মুড়ি, হাতার মুড়িতে).
+ */
+const KOFFI_FAMILY_WORD_REGEX = /^কফি(?:তে|র|টা|টি|গুলো|গুলি)?$/u;
+
+const CORRECT_CUFF_SINGLE_TOKEN_REGEX =
+  /^(?:আস্তিন(?:ে|ের|টা|টি|গুলো|গুলি)?|কাফ(?:ে|ের|টা|টি|গুলো|গুলি)?|মুড়ি(?:তে|র|টা|টি)?|মুড়ি(?:তে|র|টা|টি)?)$/u;
+
+const CLAUSE_BOUNDARY_COORDINATORS: ReadonlySet<string> = new Set([
+  'এবং',
+  'আর',
+  'কিন্তু',
+  'তবে',
+  'নতুবা',
+  'যখন',
+  'তখন',
+]);
+
+function mapKoffiTokenToAstinRepair(koffiToken: string): string {
+  const norm = normalizeBanglaUnicode(koffiToken);
+  if (norm === 'কফিতে') return 'আস্তিনে';
+  if (norm === 'কফির') return 'আস্তিনের';
+  if (norm === 'কফিটা') return 'আস্তিনটা';
+  if (norm === 'কফিটি') return 'আস্তিনটি';
+  if (norm === 'কফিগুলো') return 'আস্তিনগুলো';
+  if (norm === 'কফিগুলি') return 'আস্তিনগুলি';
+  return 'আস্তিন';
+}
+
+interface ClauseTokenSpan {
+  word: string;
+  normWord: string;
+  start: number;
+  end: number;
+}
+
+function splitBanglaParagraphIntoClauseSpans(
+  banglaParagraph: string
+): Array<{ start: number; end: number; text: string; tokens: ClauseTokenSpan[] }> {
+  const rawSegments: Array<{ start: number; end: number }> = [];
+  let segStart = 0;
+  for (let i = 0; i < banglaParagraph.length; i++) {
+    const ch = banglaParagraph[i];
+    if (ch === ',' || ch === ';' || ch === ':' || ch === '।' || ch === '?' || ch === '!' || ch === '—' || ch === '–' || ch === '\n') {
+      if (i > segStart) {
+        rawSegments.push({ start: segStart, end: i });
+      }
+      segStart = i + 1;
+    }
+  }
+  if (segStart < banglaParagraph.length) {
+    rawSegments.push({ start: segStart, end: banglaParagraph.length });
+  }
+
+  const clauses: Array<{
+    start: number;
+    end: number;
+    text: string;
+    tokens: ClauseTokenSpan[];
+  }> = [];
+
+  for (const seg of rawSegments) {
+    const segText = banglaParagraph.slice(seg.start, seg.end);
+    const wordRegex = /[\u0980-\u09FF-]+/gu;
+    const segTokens: ClauseTokenSpan[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = wordRegex.exec(segText)) !== null) {
+      segTokens.push({
+        word: m[0],
+        normWord: normalizeBanglaUnicode(m[0]),
+        start: seg.start + m.index,
+        end: seg.start + m.index + m[0].length,
+      });
+    }
+
+    // Further split on coordinating conjunctions (এবং, আর, কিন্তু, তবে, নতুবা, যখন, তখন)
+    let subTokens: ClauseTokenSpan[] = [];
+    for (const tok of segTokens) {
+      if (CLAUSE_BOUNDARY_COORDINATORS.has(tok.normWord)) {
+        if (subTokens.length > 0) {
+          clauses.push({
+            start: subTokens[0].start,
+            end: subTokens[subTokens.length - 1].end,
+            text: banglaParagraph.slice(
+              subTokens[0].start,
+              subTokens[subTokens.length - 1].end
+            ),
+            tokens: subTokens,
+          });
+          subTokens = [];
+        }
+      } else {
+        subTokens.push(tok);
+      }
+    }
+    if (subTokens.length > 0) {
+      clauses.push({
+        start: subTokens[0].start,
+        end: subTokens[subTokens.length - 1].end,
+        text: banglaParagraph.slice(
+          subTokens[0].start,
+          subTokens[subTokens.length - 1].end
+        ),
+        tokens: subTokens,
+      });
+    }
+  }
+
+  return clauses;
+}
+
+function classifySingleTokenEvidence(
+  tokens: ReadonlyArray<ClauseTokenSpan>,
+  idx: number
+): 'coffee' | 'garment' | 'weak' | 'neutral' {
+  const norm = tokens[idx].normWord;
+  if (CUFF_WEAK_MODIFIER_WORDS.has(norm)) {
+    return 'weak';
+  }
+  if (CUFF_DECISIVE_COFFEE_WORDS.has(norm)) {
+    return 'coffee';
+  }
+  if (
+    CUFF_CONSUMPTION_COMPOUND_HEADS.has(norm) &&
+    idx + 1 < tokens.length &&
+    CUFF_CONSUMPTION_AUX_REGEX.test(tokens[idx + 1].normWord)
+  ) {
+    return 'coffee';
+  }
+  if (
+    idx - 1 >= 0 &&
+    CUFF_CONSUMPTION_COMPOUND_HEADS.has(tokens[idx - 1].normWord) &&
+    CUFF_CONSUMPTION_AUX_REGEX.test(norm)
+  ) {
+    return 'coffee';
+  }
+  if (CUFF_DECISIVE_GARMENT_WORDS.has(norm)) {
+    return 'garment';
+  }
+  if (
+    idx - 1 >= 0 &&
+    tokens[idx - 1].normWord === 'বোতাম' &&
+    CUFF_GARMENT_AUX_REGEX.test(norm)
+  ) {
+    return 'garment';
+  }
+  return 'neutral';
+}
+
+function isOccurrenceBoundaryToken(
+  tokens: ReadonlyArray<ClauseTokenSpan>,
+  idx: number
+): boolean {
+  const norm = tokens[idx].normWord;
+  if (KOFFI_FAMILY_WORD_REGEX.test(norm)) {
+    return true;
+  }
+  if (CORRECT_CUFF_SINGLE_TOKEN_REGEX.test(norm)) {
+    return true;
+  }
+  // Also treat "হাতার আস্তিন/কাফ/মুড়ি" where "হাতার" immediately precedes a correct cuff rendering as part of that cuff rendering boundary
+  if (
+    norm === 'হাতার' &&
+    idx + 1 < tokens.length &&
+    CORRECT_CUFF_SINGLE_TOKEN_REGEX.test(tokens[idx + 1].normWord)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Evaluates a single Bangla কফি-family occurrence at `occIdx` in `clauseTokens`
+ * using Step 1 of §2 (Local Decisive Evidence within ±2 words, Nearest Wins,
+ * with the required Occurrence-Boundary Safeguard and Weak-Word Skipping).
+ */
+function evaluateLocalCuffCoffeeStep1(
+  clauseTokens: ReadonlyArray<ClauseTokenSpan>,
+  occIdx: number
+): 'coffee_decisive' | 'garment_decisive' | 'conflict_ambiguous' | 'no_decision' {
+  // Collect valid non-weak candidate indices up to 2 steps in each direction,
+  // stopping immediately if an occurrence boundary (another কফি-family or correct cuff rendering) is encountered.
+  const leftCandidates: number[] = [];
+  for (let i = occIdx - 1; i >= 0 && leftCandidates.length < 2; i--) {
+    if (isOccurrenceBoundaryToken(clauseTokens, i)) {
+      break;
+    }
+    const ev = classifySingleTokenEvidence(clauseTokens, i);
+    if (ev === 'weak') {
+      continue;
+    }
+    leftCandidates.push(i);
+  }
+
+  const rightCandidates: number[] = [];
+  for (
+    let i = occIdx + 1;
+    i < clauseTokens.length && rightCandidates.length < 2;
+    i++
+  ) {
+    if (isOccurrenceBoundaryToken(clauseTokens, i)) {
+      break;
+    }
+    const ev = classifySingleTokenEvidence(clauseTokens, i);
+    if (ev === 'weak') {
+      continue;
+    }
+    rightCandidates.push(i);
+  }
+
+  // Evaluate distance 1 first (nearest non-weak neighbour in each direction within ±2 words), then distance 2
+  for (let distIdx = 0; distIdx < 2; distIdx++) {
+    let hasCoffee = false;
+    let hasGarment = false;
+
+    if (distIdx < leftCandidates.length) {
+      const lIdx = leftCandidates[distIdx];
+      if (Math.abs(occIdx - lIdx) <= 2) {
+        const ev = classifySingleTokenEvidence(clauseTokens, lIdx);
+        if (ev === 'coffee') hasCoffee = true;
+        if (ev === 'garment') hasGarment = true;
+      }
+    }
+
+    if (distIdx < rightCandidates.length) {
+      const rIdx = rightCandidates[distIdx];
+      if (Math.abs(rIdx - occIdx) <= 2) {
+        const ev = classifySingleTokenEvidence(clauseTokens, rIdx);
+        if (ev === 'coffee') hasCoffee = true;
+        if (ev === 'garment') hasGarment = true;
+      }
+    }
+
+    if (hasCoffee && hasGarment) {
+      return 'conflict_ambiguous';
+    }
+    if (hasCoffee) {
+      return 'coffee_decisive';
+    }
+    if (hasGarment) {
+      return 'garment_decisive';
+    }
+  }
+
+  return 'no_decision';
+}
+
+function splitEnglishIntoClauses(englishParagraph: string): string[] {
+  return englishParagraph
+    .split(/(?:[,;:.?!—–\n]+|\b(?:and|but|while|when)\b)/i)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+/**
+ * Step 2 — Ordinal Association (Hint Only, §2):
+ * Attempts clause correspondence + exact per-clause count match and pairs by reading order.
+ * Returns 'positional' if ordinal pairing suggests a cuff referent, or 'ambiguous' otherwise.
+ * Never grounds and never authorizes a repair.
+ */
+function evaluateOrdinalCuffAssociationStep2(
+  englishClause: string | undefined,
+  banglaClauseTokens: ReadonlyArray<ClauseTokenSpan>,
+  occTokenIdx: number
+): 'positional' | 'ambiguous' {
+  if (!englishClause) {
+    return 'ambiguous';
+  }
+
+  const englishMentions: Array<'cuff' | 'coffee'> = [];
+  const engRegex = /\b(cuffs?|coffees?)\b/gi;
+  let m: RegExpExecArray | null;
+  while ((m = engRegex.exec(englishClause)) !== null) {
+    const lower = m[1].toLowerCase();
+    englishMentions.push(lower.startsWith('cuff') ? 'cuff' : 'coffee');
+  }
+
+  if (englishMentions.length === 0) {
+    return 'ambiguous';
+  }
+
+  const banglaMentionTokenIndices: number[] = [];
+  for (let i = 0; i < banglaClauseTokens.length; i++) {
+    const norm = banglaClauseTokens[i].normWord;
+    if (
+      KOFFI_FAMILY_WORD_REGEX.test(norm) ||
+      CORRECT_CUFF_SINGLE_TOKEN_REGEX.test(norm)
+    ) {
+      banglaMentionTokenIndices.push(i);
+    }
+  }
+
+  if (banglaMentionTokenIndices.length !== englishMentions.length) {
+    return 'ambiguous';
+  }
+
+  const ordinalPos = banglaMentionTokenIndices.indexOf(occTokenIdx);
+  if (ordinalPos === -1) {
+    return 'ambiguous';
+  }
+
+  return englishMentions[ordinalPos] === 'cuff' ? 'positional' : 'ambiguous';
+}
+
+/**
+ * Lints a paragraph pair for PPH-4.5B homophone and orthographic typo collisions:
+ * 1. Occurrence-level Cuff Rule (§2): when English has `/\bcuffs?\b/i`, evaluates each Bangla
+ *    `কফি`-family occurrence via Step 1 (Local Decisive Evidence within ±2 words with
+ *    Occurrence-Boundary Safeguard and weak-word skipping), Step 2 (Ordinal Association —
+ *    flag-only), and Step 3 (Ambiguous — flag-only).
+ * 2. Orthographic Typo Table (`ORTHOGRAPHIC_TYPO_REPAIRS`): `ছাকু` -> `চাকু` when English has
+ *    knife/blade and no strainer words; `quoin` -> `কয়েন` flag-only.
+ */
+export function lintParagraphHomophoneAndTypoCollisions(
+  englishParagraph: string,
+  banglaParagraph: string
+): HomophoneAndTypoCollisionIssue[] {
+  if (!englishParagraph?.trim() || !banglaParagraph?.trim()) {
+    return [];
+  }
+
+  const issues: HomophoneAndTypoCollisionIssue[] = [];
+
+  // 1. Cuff Rule (§2)
+  if (/\bcuffs?\b/i.test(englishParagraph)) {
+    const banglaClauses = splitBanglaParagraphIntoClauseSpans(banglaParagraph);
+    const englishClauses = splitEnglishIntoClauses(englishParagraph);
+    const clausesAligned = banglaClauses.length === englishClauses.length;
+
+    for (let cIdx = 0; cIdx < banglaClauses.length; cIdx++) {
+      const clause = banglaClauses[cIdx];
+      const tokens = clause.tokens;
+
+      for (let tIdx = 0; tIdx < tokens.length; tIdx++) {
+        const tok = tokens[tIdx];
+        if (!KOFFI_FAMILY_WORD_REGEX.test(tok.normWord)) {
+          continue;
+        }
+
+        const step1 = evaluateLocalCuffCoffeeStep1(tokens, tIdx);
+        if (step1 === 'coffee_decisive') {
+          // Grounded by local decisive coffee evidence -> no finding
+          continue;
+        }
+
+        if (step1 === 'garment_decisive') {
+          const suggestedRepair = mapKoffiTokenToAstinRepair(tok.word);
+          issues.push({
+            kind: 'cuff_coffee_homophone',
+            matchedBangla: tok.word,
+            matchIndex: tok.start,
+            association: 'local_garment_decisive',
+            suggestedRepair,
+            description: `Phonetic false-friend "${tok.word}" (coffee) in garment cuff context; replace with "${suggestedRepair}".`,
+          });
+          continue;
+        }
+
+        if (step1 === 'conflict_ambiguous') {
+          issues.push({
+            kind: 'cuff_coffee_homophone',
+            matchedBangla: tok.word,
+            matchIndex: tok.start,
+            association: 'ambiguous',
+            suggestedRepair: undefined,
+            description: `Ambiguous "${tok.word}" occurrence with conflicting local garment/coffee evidence (flag-only; no automatic repair).`,
+          });
+          continue;
+        }
+
+        // Step 2 & Step 3: No local decisive evidence -> flag-only (never grounds, never repairs)
+        const step2Association = clausesAligned
+          ? evaluateOrdinalCuffAssociationStep2(
+              englishClauses[cIdx],
+              tokens,
+              tIdx
+            )
+          : 'ambiguous';
+
+        issues.push({
+          kind: 'cuff_coffee_homophone',
+          matchedBangla: tok.word,
+          matchIndex: tok.start,
+          association: step2Association,
+          suggestedRepair: undefined,
+          description:
+            step2Association === 'positional'
+              ? `Positional cuff/coffee homophone candidate "${tok.word}" without local decisive evidence (flag-only; no automatic repair).`
+              : `Ambiguous "${tok.word}" occurrence in paragraph mentioning cuff without local decisive coffee evidence (flag-only; no automatic repair).`,
+        });
+      }
+    }
+  }
+
+  // 2. Orthographic Typo Table (`ORTHOGRAPHIC_TYPO_REPAIRS`)
+  for (const rule of ORTHOGRAPHIC_TYPO_REPAIRS) {
+    if (!rule.englishRequiredRegex.test(englishParagraph)) {
+      continue;
+    }
+    if (
+      rule.englishExclusionRegex &&
+      rule.englishExclusionRegex.test(englishParagraph)
+    ) {
+      continue;
+    }
+
+    const regex = new RegExp(
+      rule.banglaTypoRegex.source,
+      rule.banglaTypoRegex.flags
+    );
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(banglaParagraph)) !== null) {
+      const leading = m[1] ?? '';
+      const matchedBangla = m[2];
+      const matchIndex = m.index + leading.length;
+      const suggestedRepair =
+        !rule.flagOnly && rule.computeReplacement
+          ? rule.computeReplacement(matchedBangla)
+          : undefined;
+
+      issues.push({
+        kind:
+          rule.id === 'knife_chaku_vs_chhaku'
+            ? 'knife_strainer_typo'
+            : 'quoin_coin_homophone',
+        matchedBangla,
+        matchIndex,
+        association:
+          rule.id === 'knife_chaku_vs_chhaku'
+            ? 'orthographic_typo'
+            : 'false_friend',
+        suggestedRepair,
+        description: suggestedRepair
+          ? `Orthographic aspiration typo "${matchedBangla}" for knife/blade; replace with "${suggestedRepair}".`
+          : `Homophone false-friend "${matchedBangla}" (coin) for architectural/printing "quoin" (flag-only in 4.5B).`,
+      });
+    }
+  }
+
+  return issues;
+}
+
+/**
+ * Applies only the deterministic repairs authorized by PPH-4.5B:
+ * - Cuff occurrences with `association === 'local_garment_decisive'` (Step 1 garment decisive evidence)
+ *   are repaired in-place at their exact character offset (`matchIndex`), leaving positional/ambiguous
+ *   occurrences untouched.
+ * - Knife/blade aspiration typos (`ছাকু` -> `চাকু`) are repaired in-place; `quoin` -> `কয়েন` remains flag-only.
+ */
+export function repairHomophoneAndTypoCollisions(
+  englishParagraph: string,
+  banglaParagraph: string
+): string {
+  const issues = lintParagraphHomophoneAndTypoCollisions(
+    englishParagraph,
+    banglaParagraph
+  );
+  const repairable = issues
+    .filter((iss) => Boolean(iss.suggestedRepair))
+    .sort((a, b) => b.matchIndex - a.matchIndex);
+
+  if (repairable.length === 0) {
+    return banglaParagraph;
+  }
+
+  let repaired = banglaParagraph;
+  for (const iss of repairable) {
+    const start = iss.matchIndex;
+    const end = start + iss.matchedBangla.length;
+    if (repaired.slice(start, end) === iss.matchedBangla && iss.suggestedRepair) {
+      repaired =
+        repaired.slice(0, start) + iss.suggestedRepair + repaired.slice(end);
+    }
+  }
+  return repaired;
+}
+
+// ============================================================================
+// PPH-4.5C — CONTEXTUAL VOCABULARY GUARD RULES (CV-01 .. CV-06)
+// ============================================================================
+
+export type ContextualVocabularyRuleId =
+  | 'dictate_speech_vs_write'
+  | 'linger_tarry_vs_hide'
+  | 'metallurgical_temper'
+  | 'craft_founder_vs_inst_founder'
+  | 'bone_dry_preserves_dryness'
+  | 'digital_chat_pls';
+
+export type ContextualVocabularyEnforcementMode =
+  | 'flag_and_draft_revert_only'
+  | 'flag_and_deterministic_replace';
+
+export interface ContextualVocabularyGuardRule {
+  id: ContextualVocabularyRuleId;
+  code: 'CV-01' | 'CV-02' | 'CV-03' | 'CV-04' | 'CV-05' | 'CV-06';
+  enforcement: ContextualVocabularyEnforcementMode;
+  matchesEnglishContext: (englishParagraph: string) => boolean;
+  findBanglaViolations: (
+    englishParagraph: string,
+    banglaParagraph: string
+  ) => Array<{
+    matchedBangla: string;
+    suggestedReplacement?: string;
+    description: string;
+  }>;
+}
+
+export interface ContextualVocabularyIssue {
+  ruleId: ContextualVocabularyRuleId;
+  code: 'CV-01' | 'CV-02' | 'CV-03' | 'CV-04' | 'CV-05' | 'CV-06';
+  enforcement: ContextualVocabularyEnforcementMode;
+  matchedBangla: string;
+  suggestedReplacement?: string;
+  description: string;
+}
+
+/**
+ * Checks whether an English term or paragraph triggers the craft `-founder` context (`CV-04`)
+ * rather than an institutional founder context.
+ */
+export function isCraftFounderEnglishContext(englishText: string): boolean {
+  if (!englishText?.trim()) return false;
+  // Institutional exclusion guard
+  if (
+    /\b(?:founder\s+of\s+the|founders\s+of\s+the|school|college|company|hospital|trust|charity|institution|university|society|party)\b/i.test(
+      englishText
+    ) &&
+    !/\b[\w]+-founders?\b|\b[\w]+-founder['’]s\b|\bfounder-marks?\b/i.test(
+      englishText
+    )
+  ) {
+    return false;
+  }
+
+  // Hyphenated craft -founder compound (e.g., glass-founder, bronze-founder, type-founder, founder-mark)
+  if (
+    /\b[\w]+-founders?\b|\b[\w]+-founder['’]s\b|\bfounder-marks?\b/i.test(
+      englishText
+    )
+  ) {
+    return true;
+  }
+
+  // Unhyphenated founder collocated with craft/metallurgical/kiln context
+  if (
+    /\b(?:founders?|founder['’]s)\b/i.test(englishText) &&
+    /\b(?:furnace|crucible|kiln|molten|glass|smelt\w*|foundry|ladle|mold|mould|cast\w*|mandrel|chime|bronze|brass|iron|cinder-quartz|anvil)\b/i.test(
+      englishText
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Deterministically replaces false-friend `প্রতিষ্ঠাতা` (institutional founder) with
+ * `ঢালাইকর` / `ঢালাই-কারিগর` / `ঢালাই-চিহ্ন` when `isCraftFounderEnglishContext(englishText)` is true.
+ */
+export function repairCraftFounderBangla(
+  englishText: string,
+  banglaText: string
+): string {
+  if (!isCraftFounderEnglishContext(englishText) || !banglaText) {
+    return banglaText;
+  }
+
+  let out = banglaText;
+  // 1. Hyphenated `[X]-প্রতিষ্ঠাতা(দের|রা|র|ও)?` -> `[X]-ঢালাইকর(দের|রা|ের|ও)?`
+  out = out.replace(
+    /([\u0980-\u09FF]+)-প্রতিষ্ঠাতা(দের|রা|র|ও)?/gu,
+    (_m, prefix: string, suf: string | undefined) => {
+      if (suf === 'র') return `${prefix}-ঢালাইকরের`;
+      return `${prefix}-ঢালাইকর${suf ?? ''}`;
+    }
+  );
+  // 2. `প্রতিষ্ঠাতা-চিহ্ন` -> `ঢালাই-চিহ্ন`
+  out = out.replace(/প্রতিষ্ঠাতা-চিহ্ন/gu, 'ঢালাই-চিহ্ন');
+  // 3. `প্রতিষ্ঠাতা কারিগর(দের|রা|ের|ে)?` -> `ঢালাই-কারিগর$1`
+  out = out.replace(
+    /প্রতিষ্ঠাতা\s+কারিগর(দের|রা|ের|ে)?/gu,
+    (_m, suf: string | undefined) => `ঢালাই-কারিগর${suf ?? ''}`
+  );
+  // 4. `প্রতিষ্ঠাতা সদস্য(দের|রা|ের)?` -> `ঢালাইকর(দের|রা|ের)?`
+  out = out.replace(
+    /প্রতিষ্ঠাতা\s+সদস্য(দের|রা|ের)?/gu,
+    (_m, suf: string | undefined) => `ঢালাইকর${suf ?? ''}`
+  );
+  // 5. Bare `প্রতিষ্ঠাতা(দের|রা|র|ও)?` -> `ঢালাইকর(দের|রা|ের|ও)?`
+  out = out.replace(
+    /(^|[^\u0980-\u09FF-])প্রতিষ্ঠাতা(দের|রা|র|ও)?(?=$|[^\u0980-\u09FF])/gu,
+    (_m, lead: string, suf: string | undefined) => {
+      if (suf === 'র') return `${lead}ঢালাইকরের`;
+      return `${lead}ঢালাইকর${suf ?? ''}`;
+    }
+  );
+
+  return out;
+}
+
+export const CONTEXTUAL_VOCABULARY_GUARD_RULES: ReadonlyArray<ContextualVocabularyGuardRule> =
+  [
+    // CV-01: dictate_speech_vs_write
+    {
+      id: 'dictate_speech_vs_write',
+      code: 'CV-01',
+      enforcement: 'flag_and_draft_revert_only',
+      matchesEnglishContext: (englishParagraph: string): boolean =>
+        /\bdictat(?:ed|es|ing|e)\b/i.test(englishParagraph) &&
+        /\b(?:letter|notes?|figures?|clauses?|receipt|document|clerk|nephew|secretary|stenographer|typist|wrote|written|pen|type\w*)\b/i.test(
+          englishParagraph
+        ),
+      findBanglaViolations: (
+        _englishParagraph: string,
+        banglaParagraph: string
+      ) => {
+        const results: Array<{
+          matchedBangla: string;
+          suggestedReplacement?: string;
+          description: string;
+        }> = [];
+        const regex =
+          /(^|[^\u0980-\u09FF])(লিখে\s+(?:দি(?:য়েছিলাম|য়েছিলাম|য়েছিলেন|য়েছিলেন|য়েছিল|য়েছিল|লাম|লেন|চ্ছে|চ্ছেন|তে|বেন)|দে(?:বে|বেন|ন|য়|য়)))(?=$|[^\u0980-\u09FF])/gu;
+        let m: RegExpExecArray | null;
+        while ((m = regex.exec(banglaParagraph)) !== null) {
+          const lead = m[1] ?? '';
+          const matched = m[2];
+          const matchStart = m.index + lead.length;
+          const prefixSlice = banglaParagraph.slice(
+            Math.max(0, matchStart - 20),
+            matchStart
+          );
+          if (/(?:মুখে\s+বলে|বলে)\s*$/u.test(prefixSlice)) {
+            continue;
+          }
+          results.push({
+            matchedBangla: matched,
+            suggestedReplacement: undefined,
+            description: `Contextual vocabulary false-friend (CV-01): "${matched}" means wrote down oneself, whereas English "dictated" means spoke aloud for another to write (মুখে বলে লেখানো).`,
+          });
+        }
+        return results;
+      },
+    },
+
+    // CV-02: linger_tarry_vs_hide
+    {
+      id: 'linger_tarry_vs_hide',
+      code: 'CV-02',
+      enforcement: 'flag_and_draft_revert_only',
+      matchesEnglishContext: (englishParagraph: string): boolean =>
+        /\blinger(?:ed|s|ing)?\b/i.test(englishParagraph) &&
+        !/\b(?:hid|hidden|hiding|lurk\w*|conceal\w*)\b/i.test(englishParagraph),
+      findBanglaViolations: (
+        _englishParagraph: string,
+        banglaParagraph: string
+      ) => {
+        const results: Array<{
+          matchedBangla: string;
+          suggestedReplacement?: string;
+          description: string;
+        }> = [];
+        const regex =
+          /(^|[^\u0980-\u09FF])(লুকিয়ে\s+(?:ছিলেন|ছিল|থাকা|রইল|আছে|থাকলেন)|লুকিয়ে\s+(?:ছিলেন|ছিল|থাকা|রইল|আছে|থাকলেন))(?=$|[^\u0980-\u09FF])/gu;
+        let m: RegExpExecArray | null;
+        while ((m = regex.exec(banglaParagraph)) !== null) {
+          const matched = m[2];
+          results.push({
+            matchedBangla: matched,
+            suggestedReplacement: undefined,
+            description: `Contextual vocabulary false-friend (CV-02): "${matched}" means hid/concealed oneself, whereas English "lingered" means tarried/remained behind slowly.`,
+          });
+        }
+        return results;
+      },
+    },
+
+    // CV-03: metallurgical_temper
+    {
+      id: 'metallurgical_temper',
+      code: 'CV-03',
+      enforcement: 'flag_and_deterministic_replace',
+      matchesEnglishContext: (englishParagraph: string): boolean =>
+        /\btemper(?:ed|ing)?\b/i.test(englishParagraph) &&
+        /\b(?:iron|steel|metal|blade|pins?|chain|links?|bronze|brass|copper|anvil|forge|quench\w*|weight|bazaar\s+iron|rim|cast\w*)\b/i.test(
+          englishParagraph
+        ) &&
+        !/\b(?:lost\s+\w+\s+temper|lose\s+\w+\s+temper|short\s+temper|good\s+temper|bad\s+temper|ill\s+temper|even\s+temper|keep\s+\w+\s+temper|kept\s+\w+\s+temper|(?:his|her|my|your|their)\s+temper)\b/i.test(
+          englishParagraph
+        ),
+      findBanglaViolations: (
+        _englishParagraph: string,
+        banglaParagraph: string
+      ) => {
+        const results: Array<{
+          matchedBangla: string;
+          suggestedReplacement?: string;
+          description: string;
+        }> = [];
+        const regex =
+          /(^|[^\u0980-\u09FF])(ওজন\s+ও\s+মেজাজ(?:ে|ের)?|মেজাজ(?:ে|ের|ও|টা|টি)?)(?=$|[^\u0980-\u09FF])/gu;
+        let m: RegExpExecArray | null;
+        while ((m = regex.exec(banglaParagraph)) !== null) {
+          const matched = m[2];
+          const suggestedReplacement = matched
+            .replace(/মেজাজে/gu, 'কাঠিন্যে')
+            .replace(/মেজাজের/gu, 'কাঠিন্যের')
+            .replace(/মেজাজটা/gu, 'কাঠিন্যটা')
+            .replace(/মেজাজটি/gu, 'কাঠিন্যটি')
+            .replace(/মেজাজও/gu, 'কাঠিন্যও')
+            .replace(/মেজাজ/gu, 'কাঠিন্য');
+          results.push({
+            matchedBangla: matched,
+            suggestedReplacement,
+            description: `Contextual vocabulary false-friend (CV-03): "${matched}" means emotional mood, whereas metallurgical "temper" of metal/iron means hardness/tempering ("${suggestedReplacement}").`,
+          });
+        }
+        return results;
+      },
+    },
+
+    // CV-04: craft_founder_vs_inst_founder
+    {
+      id: 'craft_founder_vs_inst_founder',
+      code: 'CV-04',
+      enforcement: 'flag_and_deterministic_replace',
+      matchesEnglishContext: (englishParagraph: string): boolean =>
+        isCraftFounderEnglishContext(englishParagraph),
+      findBanglaViolations: (
+        englishParagraph: string,
+        banglaParagraph: string
+      ) => {
+        const results: Array<{
+          matchedBangla: string;
+          suggestedReplacement?: string;
+          description: string;
+        }> = [];
+        const regex =
+          /(^|[^\u0980-\u09FF])((?:[\u0980-\u09FF]+-)?প্রতিষ্ঠাতা(?:-চিহ্ন(?:গুলো|গুলি|টা|টি|ের|ে)?|\s+কারিগর(?:দের|রা|ের|ে)?|\s+সদস্য(?:দের|রা|ের)?|দের|রা|র|ও)?)(?=$|[^\u0980-\u09FF])/gu;
+        let m: RegExpExecArray | null;
+        while ((m = regex.exec(banglaParagraph)) !== null) {
+          const matched = m[2];
+          const suggestedReplacement = repairCraftFounderBangla(
+            englishParagraph,
+            matched
+          );
+          results.push({
+            matchedBangla: matched,
+            suggestedReplacement,
+            description: `Contextual vocabulary false-friend (CV-04): "${matched}" means institutional founder, whereas craft/foundry "founder" means caster/melter ("${suggestedReplacement}").`,
+          });
+        }
+        return results;
+      },
+    },
+
+    // CV-05: bone_dry_preserves_dryness
+    {
+      id: 'bone_dry_preserves_dryness',
+      code: 'CV-05',
+      enforcement: 'flag_and_draft_revert_only',
+      matchesEnglishContext: (englishParagraph: string): boolean =>
+        /\bbone-dry\b/i.test(englishParagraph),
+      findBanglaViolations: (
+        _englishParagraph: string,
+        banglaParagraph: string
+      ) => {
+        if (/শুষ্ক|শুকনো|খটখটে/u.test(banglaParagraph)) {
+          return [];
+        }
+        return [
+          {
+            matchedBangla: banglaParagraph,
+            suggestedReplacement: undefined,
+            description:
+              'Contextual vocabulary omission (CV-05): English "bone-dry" requires preserving the explicit dryness sense ("শুষ্ক" / "শুকনো" / "খটখটে") in Bangla.',
+          },
+        ];
+      },
+    },
+
+    // CV-06: digital_chat_pls
+    {
+      id: 'digital_chat_pls',
+      code: 'CV-06',
+      enforcement: 'flag_and_deterministic_replace',
+      matchesEnglishContext: (englishParagraph: string): boolean =>
+        /\b(?:pls|plz)\b/i.test(englishParagraph) &&
+        (/\b(?:WhatsApp|text|message|notification|screen|SMS|DM|chat|inbox|group\s+chat|phone)\b/i.test(
+          englishParagraph
+        ) ||
+          /\[[^\]]*\d{1,2}:\d{2}\s*(?:AM|PM)?\]/i.test(englishParagraph) ||
+          /^\s*\*\[[^\]]+\]:/i.test(englishParagraph)),
+      findBanglaViolations: (
+        _englishParagraph: string,
+        banglaParagraph: string
+      ) => {
+        const results: Array<{
+          matchedBangla: string;
+          suggestedReplacement?: string;
+          description: string;
+        }> = [];
+        const regex =
+          /(^|[^\u0980-\u09FF])(দয়া\s+করে|দয়া\s+করে)(?=$|[^\u0980-\u09FF])/gu;
+        let m: RegExpExecArray | null;
+        while ((m = regex.exec(banglaParagraph)) !== null) {
+          const matched = m[2];
+          results.push({
+            matchedBangla: matched,
+            suggestedReplacement: 'প্লিজ',
+            description: `Contextual register mismatch (CV-06): digital/chat abbreviation "pls" should be rendered colloquially as "প্লিজ" rather than formal "${matched}".`,
+          });
+        }
+        return results;
+      },
+    },
+  ];
+
+/**
+ * Evaluates a paragraph pair against all 6 PPH-4.5C contextual vocabulary guard rules (`CV-01`..`CV-06`).
+ */
+export function lintParagraphContextualVocabulary(
+  englishParagraph: string,
+  banglaParagraph: string
+): ContextualVocabularyIssue[] {
+  if (!englishParagraph?.trim() || !banglaParagraph?.trim()) {
+    return [];
+  }
+
+  const issues: ContextualVocabularyIssue[] = [];
+  for (const rule of CONTEXTUAL_VOCABULARY_GUARD_RULES) {
+    if (!rule.matchesEnglishContext(englishParagraph)) {
+      continue;
+    }
+    const violations = rule.findBanglaViolations(
+      englishParagraph,
+      banglaParagraph
+    );
+    for (const v of violations) {
+      issues.push({
+        ruleId: rule.id,
+        code: rule.code,
+        enforcement: rule.enforcement,
+        matchedBangla: v.matchedBangla,
+        suggestedReplacement: v.suggestedReplacement,
+        description: v.description,
+      });
+    }
+  }
+  return issues;
+}
+
+/**
+ * Applies PPH-4.5C contextual vocabulary enforcement in `sanitizeStage4EditedParagraph`:
+ * - For `CV-01` (`dictate_speech_vs_write`), `CV-02` (`linger_tarry_vs_hide`), and `CV-05` (`bone_dry_preserves_dryness`):
+ *   restores from the Stage 3 `draftBanglaParagraph` ONLY when `draftBanglaParagraph` did not have that violation
+ *   (never manufactures missing meaning or invents replacements).
+ * - For `CV-03` (`metallurgical_temper`), `CV-04` (`craft_founder_vs_inst_founder`), and `CV-06` (`digital_chat_pls`):
+ *   applies deterministic replacement in `editedBanglaParagraph`.
+ */
+export function applyContextualVocabularyRepairs(params: {
+  englishParagraph: string;
+  draftBanglaParagraph: string;
+  editedBanglaParagraph: string;
+}): string {
+  const { englishParagraph, draftBanglaParagraph } = params;
+  let edited = params.editedBanglaParagraph;
+  if (!englishParagraph?.trim() || !edited?.trim()) {
+    return edited;
+  }
+
+  const editedIssues = lintParagraphContextualVocabulary(
+    englishParagraph,
+    edited
+  );
+  if (editedIssues.length === 0) {
+    return edited;
+  }
+
+  const draftIssues = draftBanglaParagraph?.trim()
+    ? lintParagraphContextualVocabulary(englishParagraph, draftBanglaParagraph)
+    : [];
+
+  // 1. Check draft-revert-only rules (CV-01, CV-02, CV-05):
+  //    If Stage 4 introduced a CV-01, CV-02, or CV-05 violation that was absent in the Stage 3 draft,
+  //    revert to the Stage 3 draft (never manufacture missing meaning).
+  for (const iss of editedIssues) {
+    if (iss.enforcement === 'flag_and_draft_revert_only') {
+      const draftHadSameRuleViolation = draftIssues.some(
+        (d) => d.ruleId === iss.ruleId
+      );
+      if (!draftHadSameRuleViolation && draftBanglaParagraph?.trim()) {
+        return draftBanglaParagraph;
+      }
+    }
+  }
+
+  // 2. Apply deterministic replacements for CV-03, CV-04, and CV-06
+  for (const iss of editedIssues) {
+    if (
+      iss.enforcement === 'flag_and_deterministic_replace' &&
+      iss.suggestedReplacement
+    ) {
+      edited = edited.replace(iss.matchedBangla, iss.suggestedReplacement);
+    }
+  }
+
+  return edited;
+}
+
+/**
+ * Collects deterministic `VerificationIssue[]` for a paragraph across PPH-4.5A (doublets),
+ * PPH-4.5B (homophones/typos), and PPH-4.5C (contextual vocabulary) for Stage 4 pre-window
+ * lint guidance and Stage 5 report merging.
+ */
+export function collectParagraphStage4QualityIssues(
+  pair: ParagraphPair
+): VerificationIssue[] {
+  const english = (pair.englishText ?? '').trim();
+  const bangla = (pair.banglaText ?? '').trim();
+  if (!english || !bangla || pair.missingTranslation) {
+    return [];
+  }
+
+  const pIdx = pair.index;
+  const issues: VerificationIssue[] = [];
+
+  // 4.5A: Inline "বা" doublets
+  const doublets = findUngroundedInlineOrDoublets(english, bangla);
+  doublets.forEach((d, idx) => {
+    issues.push({
+      id: `pph45a-p${pIdx}-d${idx}`,
+      severity: 'medium',
+      type: 'added_info',
+      paragraphIndex: pIdx,
+      description: d.description,
+      englishExcerpt: english.slice(0, 140),
+      banglaExcerpt: d.matchedBangla,
+      expectedBangla: d.collapsedReplacement,
+      suggestedFix: undefined,
+      resolved: false,
+      source: 'deterministic_lint',
+      findingSignature: `deterministic_lint::pph45a::${d.pattern}::${normalizeBanglaUnicode(d.matchedBangla)}`,
+    });
+  });
+
+  // 4.5B: Homophones & typos
+  const homophones = lintParagraphHomophoneAndTypoCollisions(english, bangla);
+  homophones.forEach((h, idx) => {
+    issues.push({
+      id: `pph45b-p${pIdx}-h${idx}`,
+      severity: h.suggestedRepair ? 'high' : 'medium',
+      type: 'changed_meaning',
+      paragraphIndex: pIdx,
+      description: h.description,
+      englishExcerpt: english.slice(0, 140),
+      banglaExcerpt: h.matchedBangla,
+      expectedBangla: h.suggestedRepair,
+      suggestedFix: undefined,
+      resolved: false,
+      source: 'deterministic_lint',
+      findingSignature: `deterministic_lint::pph45b::${h.kind}::${h.association}::${normalizeBanglaUnicode(h.matchedBangla)}`,
+    });
+  });
+
+  // 4.5C: Contextual vocabulary
+  const cvIssues = lintParagraphContextualVocabulary(english, bangla);
+  cvIssues.forEach((cv, idx) => {
+    issues.push({
+      id: `pph45c-p${pIdx}-${cv.code}-${idx}`,
+      severity: 'high',
+      type: 'changed_meaning',
+      paragraphIndex: pIdx,
+      description: cv.description,
+      englishExcerpt: english.slice(0, 140),
+      banglaExcerpt: cv.matchedBangla.slice(0, 140),
+      expectedBangla: cv.suggestedReplacement,
+      suggestedFix: undefined,
+      resolved: false,
+      source: 'deterministic_lint',
+      findingSignature: `deterministic_lint::pph45c::${cv.code}::${normalizeBanglaUnicode(cv.matchedBangla.slice(0, 80))}`,
+    });
+  });
+
+  return issues;
+}

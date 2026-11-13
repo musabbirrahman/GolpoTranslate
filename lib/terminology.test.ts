@@ -95,6 +95,14 @@ import {
   getVerificationIssueScorePenalty,
   detectSiblingCompoundCollisions,
   findUngroundedGlossaryInjections,
+  findUngroundedInlineOrDoublets,
+  resolveUngroundedInlineOrDoublets,
+  ORTHOGRAPHIC_TYPO_REPAIRS,
+  lintParagraphHomophoneAndTypoCollisions,
+  repairHomophoneAndTypoCollisions,
+  CONTEXTUAL_VOCABULARY_GUARD_RULES,
+  lintParagraphContextualVocabulary,
+  applyContextualVocabularyRepairs,
 } from './terminology';
 import {
   alignParagraphs,
@@ -20049,3 +20057,603 @@ test('T-4.4-03: Stage 4 window-scoped glossary filtering excludes unmatched sibl
   assert.equal(stage4Result.editedParagraphs.length, 48);
 });
 
+// ============================================================================
+// PPH-4.5A — UNGROUNDED INLINE "বা" DOUBLET UNIT TESTS (T-4.5A-01 .. T-4.5A-02)
+// ============================================================================
+
+test('T-4.5A-01: Pattern A1 stem-repeat inline বা doublet collapse on story-01 [P01] and B-SPEC B-4.5A-P1 / B-4.5A-N1 / B-4.5A-N2', () => {
+  // 1. Set A D-15 (story-01 [P01]): "folding canvas shutters" -> "ভাঁজ করা ক্যানভাস বা ক্যানভাসের ঝাঁপগুলো"
+  const story01P01English =
+    'Every afternoon at four, before the dust from the limestone quarry could settle on the folding canvas shutters, Master Harilal wound the big wall-clock above the grain-scale.';
+  const story01P01Draft =
+    'প্রতিদিন বিকেল চারটেয়, চুনাপাথরের খাদানের ধুলো ভাঁজ করা ক্যানভাসের ঝাঁপগুলোর ওপর জমার আগেই, মাস্টার হরিলাল শস্য-মাপার পাল্লার ওপরের বড় দেয়াল-ঘড়িটায় দম দিতেন।';
+  const story01P01EditedWithDoublet =
+    'প্রতিদিন বিকেল চারটেয়, চুনাপাথরের খাদানের ধুলো ভাঁজ করা ক্যানভাস বা ক্যানভাসের ঝাঁপগুলোর ওপর জমার আগেই, মাস্টার হরিলাল শস্য-মাপার পাল্লার ওপরের বড় দেয়াল-ঘড়িটায় দম দিতেন।';
+
+  const d15Issues = findUngroundedInlineOrDoublets(
+    story01P01English,
+    story01P01EditedWithDoublet
+  );
+  assert.equal(d15Issues.length, 1);
+  assert.equal(d15Issues[0].pattern, 'stem_repeat_ba');
+  assert.equal(d15Issues[0].collapsedReplacement, 'ক্যানভাসের ঝাঁপগুলোর');
+
+  const d15Resolved = resolveUngroundedInlineOrDoublets(
+    story01P01English,
+    story01P01EditedWithDoublet
+  );
+  assert.ok(d15Resolved.includes('ভাঁজ করা ক্যানভাসের ঝাঁপগুলোর'));
+  assert.ok(!d15Resolved.includes('ক্যানভাস বা ক্যানভাসের'));
+
+  const d15Sanitized = sanitizeStage4EditedParagraph({
+    englishParagraph: story01P01English,
+    draftBanglaParagraph: story01P01Draft,
+    editedBanglaParagraph: story01P01EditedWithDoublet,
+  });
+  assert.ok(d15Sanitized.includes('ভাঁজ করা ক্যানভাসের ঝাঁপগুলোর'));
+  assert.ok(!d15Sanitized.includes('ক্যানভাস বা ক্যানভাসের'));
+
+  // 2. B-SPEC Positive B-4.5A-P1: "slate louver" -> "ভারী স্লেট বা স্লেটের খড়খড়িটা"
+  const b45AP1English =
+    'Before dusk the sexton hooked the heavy slate louver against the belfry wall.';
+  const b45AP1Bangla =
+    'সন্ধ্যার আগে গির্জার তত্ত্বাবধায়ক ভারী স্লেট বা স্লেটের খড়খড়িটা ঘণ্টাঘরের দেয়ালে আটকে দিল।';
+  const b45AP1Resolved = resolveUngroundedInlineOrDoublets(
+    b45AP1English,
+    b45AP1Bangla
+  );
+  assert.ok(b45AP1Resolved.includes('ভারী স্লেটের খড়খড়িটা'));
+  assert.ok(!b45AP1Resolved.includes('স্লেট বা স্লেটের'));
+
+  // 3. B-SPEC Negative B-4.5A-N1: Source has genuine "or" ("shingled cedar or slate") -> must NOT collapse "সিডার কাঠ বা স্লেটের"
+  const b45AN1English =
+    'The steep roof was covered in shingled cedar or slate, depending on which wing had been rebuilt after the gale.';
+  const b45AN1Bangla =
+    'ঝড়ের পরে কোন অংশটি পুনর্নির্মাণ করা হয়েছিল তার ওপর নির্ভর করে খাড়া ছাদটি সিডার কাঠ বা স্লেটের টালি দিয়ে ঢাকা ছিল।';
+  assert.equal(
+    findUngroundedInlineOrDoublets(b45AN1English, b45AN1Bangla).length,
+    0
+  );
+  assert.equal(
+    resolveUngroundedInlineOrDoublets(b45AN1English, b45AN1Bangla),
+    b45AN1Bangla
+  );
+
+  // 4. B-SPEC Negative B-4.5A-N2: Interrogative/emphatic Bangla "কী বা" -> must NOT touch
+  const b45AN2English = 'What could he possibly say to the widow after seven years?';
+  const b45AN2Bangla = 'সাত বছর পর বিধবাকে সে কী বা বলতে পারত?';
+  assert.equal(
+    findUngroundedInlineOrDoublets(b45AN2English, b45AN2Bangla).length,
+    0
+  );
+  assert.equal(
+    resolveUngroundedInlineOrDoublets(b45AN2English, b45AN2Bangla),
+    b45AN2Bangla
+  );
+});
+
+test('T-4.5A-02: Pattern A2 loanword+gloss doublet collapse per explicit mapping table (tic, cradle, pendulum bob) and flag-only for unmapped A2 pairs', () => {
+  // 1. Set A D-18 (story-03 [P11]): "tic" -> "টিক বা কাঁপুনি" collapses to keep "টিক"
+  const story03P11English = 'A nervous tic had started in her left eyelid.';
+  const story03P11Draft = 'তার বাঁ চোখের পাতায় একটা নার্ভাস টিক শুরু হয়েছে।';
+  const story03P11Edited =
+    'তার বাঁ চোখের পাতায় একটা নার্ভাস টিক বা কাঁপুনি শুরু হয়েছে।';
+  const ticIssues = findUngroundedInlineOrDoublets(
+    story03P11English,
+    story03P11Edited
+  );
+  assert.equal(ticIssues.length, 1);
+  assert.equal(ticIssues[0].pattern, 'loanword_gloss_ba');
+  assert.equal(ticIssues[0].collapsedReplacement, 'টিক');
+
+  const ticSanitized = sanitizeStage4EditedParagraph({
+    englishParagraph: story03P11English,
+    draftBanglaParagraph: story03P11Draft,
+    editedBanglaParagraph: story03P11Edited,
+  });
+  assert.equal(ticSanitized, 'তার বাঁ চোখের পাতায় একটা নার্ভাস টিক শুরু হয়েছে।');
+  assert.ok(!ticSanitized.includes('বা কাঁপুনি'));
+
+  // 2. Set A D-19 (story-04 [P02] / cradle): "cradle" -> "দোলনা বা ক্র্যাডলে" collapses to keep "দোলনা"
+  const cradleEnglish = 'Up in the cradle, the timber creaked.';
+  const cradleEdited = 'উপরে দোলনা বা ক্র্যাডলে, কাঠগুলো ক্যাঁচক্যাঁচ শব্দ করল।';
+  const cradleIssues = findUngroundedInlineOrDoublets(cradleEnglish, cradleEdited);
+  assert.equal(cradleIssues.length, 1);
+  assert.equal(cradleIssues[0].pattern, 'loanword_gloss_ba');
+  const cradleResolved = resolveUngroundedInlineOrDoublets(
+    cradleEnglish,
+    cradleEdited
+  );
+  assert.ok(cradleResolved.includes('দোলনা'));
+  assert.ok(!cradleResolved.includes('ক্র্যাডল'));
+
+  // 3. B-SPEC Positive B-4.5A-P2: "pendulum bob" -> "বব বা পিন্ডটার" collapses via exact-pair lookup to keep "বব" ("ববটার")
+  const b45AP2English =
+    'He wiped the verdigris from the brass pendulum bob with a chamois rag.';
+  const b45AP2Bangla =
+    'সে শ্যামোয়া চামড়ার টুকরো দিয়ে পিতলের দোলকের বব বা পিন্ডটার সবুজ মরচে মুছে ফেলল।';
+  const bobIssues = findUngroundedInlineOrDoublets(b45AP2English, b45AP2Bangla);
+  assert.equal(bobIssues.length, 1);
+  assert.equal(bobIssues[0].pattern, 'loanword_gloss_ba');
+  assert.equal(bobIssues[0].collapsedReplacement, 'ববটার');
+  const bobResolved = resolveUngroundedInlineOrDoublets(
+    b45AP2English,
+    b45AP2Bangla
+  );
+  assert.equal(
+    bobResolved,
+    'সে শ্যামোয়া চামড়ার টুকরো দিয়ে পিতলের দোলকের ববটার সবুজ মরচে মুছে ফেলল।'
+  );
+  assert.ok(!bobResolved.includes('বা পিন্ড'));
+
+  // 4. Unmapped closed-list A2 pair (e.g., "বোল্ট বা ছিটকিনি") is flagged only, NEVER blindly collapsed
+  const unmappedEnglish = 'He slid the heavy iron bolt across the door.';
+  const unmappedBangla = 'সে দরজার ওপর ভারী লোহার বোল্ট বা ছিটকিনি টেনে দিল।';
+  const unmappedIssues = findUngroundedInlineOrDoublets(
+    unmappedEnglish,
+    unmappedBangla
+  );
+  assert.equal(unmappedIssues.length, 1);
+  assert.equal(unmappedIssues[0].pattern, 'loanword_gloss_ba');
+  assert.equal(unmappedIssues[0].collapsedReplacement, undefined);
+  assert.equal(
+    resolveUngroundedInlineOrDoublets(unmappedEnglish, unmappedBangla),
+    unmappedBangla,
+    'Unmapped A2 pair must be flagged only and never blindly collapsed'
+  );
+});
+
+// ============================================================================
+// PPH-4.5B — HOMOPHONES AND TYPOS UNIT TESTS (T-4.5B-01 .. T-4.5B-02)
+// ============================================================================
+
+test('T-4.5B-01: Cuff Rule (§2) occurrence-level evaluation, Occurrence-Boundary Safeguard two-occurrence verification, B-4.5B-P1, and B-4.5B-N1', () => {
+  // 1. Set A D-07 (story-02 [P01]): "woollen cuff of his mackintosh" -> "ম্যাকিন্টশের পশমি কফিতে"
+  const story02P01English =
+    'Devdas stood by the window, wiping a drop of rain from the frayed woollen cuff of his mackintosh.';
+  const story02P01Draft =
+    'দেবদাস জানলার পাশে দাঁড়িয়ে তার ম্যাকিন্টশের ছেঁড়া পশমি আস্তিনে বৃষ্টির একটা ফোঁটা মুছে নিল।';
+  const story02P01EditedCorrupted =
+    'দেবদাস জানলার পাশে দাঁড়িয়ে তার ম্যাকিন্টশের পশমি কফিতে বৃষ্টির একটা ফোঁটা মুছে নিল।';
+
+  const d07Issues = lintParagraphHomophoneAndTypoCollisions(
+    story02P01English,
+    story02P01EditedCorrupted
+  );
+  assert.equal(d07Issues.length, 1);
+  assert.equal(d07Issues[0].kind, 'cuff_coffee_homophone');
+  assert.equal(d07Issues[0].association, 'local_garment_decisive');
+  assert.equal(d07Issues[0].suggestedRepair, 'আস্তিনে');
+
+  const d07Repaired = repairHomophoneAndTypoCollisions(
+    story02P01English,
+    story02P01EditedCorrupted
+  );
+  assert.ok(d07Repaired.includes('ম্যাকিন্টশের পশমি আস্তিনে'));
+  assert.ok(!d07Repaired.includes('পশমি কফিতে'));
+
+  const d07Sanitized = sanitizeStage4EditedParagraph({
+    englishParagraph: story02P01English,
+    draftBanglaParagraph: story02P01Draft,
+    editedBanglaParagraph: story02P01EditedCorrupted,
+  });
+  assert.ok(d07Sanitized.includes('ম্যাকিন্টশের পশমি আস্তিনে'));
+  assert.ok(!d07Sanitized.includes('পশমি কফিতে'));
+
+  // 2. Mandatory §2 Two-Occurrence Verification:
+  //    English: "He poured coffee onto the torn cuff."
+  //    Bangla:  "সে ছেঁড়া কফিতে কফি ঢালল।"
+  //    - First occurrence ("কফিতে") has "ছেঁড়া" at distance 1 -> repaired to "আস্তিনে".
+  //    - Second occurrence ("কফি"): leftward scan stops at the first "কফিতে" boundary and cannot reach "ছেঁড়া" -> flag-only, NOT repaired.
+  //    - Resulting repaired text: "সে ছেঁড়া আস্তিনে কফি ঢালল।"
+  const twoOccEnglish = 'He poured coffee onto the torn cuff.';
+  const twoOccBangla = 'সে ছেঁড়া কফিতে কফি ঢালল।';
+  const twoOccIssues = lintParagraphHomophoneAndTypoCollisions(
+    twoOccEnglish,
+    twoOccBangla
+  );
+  assert.equal(twoOccIssues.length, 2);
+  assert.equal(twoOccIssues[0].matchedBangla, 'কফিতে');
+  assert.equal(twoOccIssues[0].association, 'local_garment_decisive');
+  assert.equal(twoOccIssues[0].suggestedRepair, 'আস্তিনে');
+  assert.equal(twoOccIssues[1].matchedBangla, 'কফি');
+  assert.equal(twoOccIssues[1].suggestedRepair, undefined);
+
+  const twoOccRepaired = repairHomophoneAndTypoCollisions(
+    twoOccEnglish,
+    twoOccBangla
+  );
+  assert.equal(twoOccRepaired, 'সে ছেঁড়া আস্তিনে কফি ঢালল।');
+
+  // 3. Mandatory §2 Mirror Check:
+  //    Bangla: "সে পশমি আস্তিনে কফি ঢালল।"
+  //    Leftward scan from "কফি" stops at "আস্তিনে" (correct cuff rendering boundary), so "পশমি" cannot reach "কফি" and "কফি" is NOT repaired.
+  const mirrorEnglish = 'He poured coffee onto the woollen cuff.';
+  const mirrorBangla = 'সে পশমি আস্তিনে কফি ঢালল।';
+  const mirrorIssues = lintParagraphHomophoneAndTypoCollisions(
+    mirrorEnglish,
+    mirrorBangla
+  );
+  assert.equal(mirrorIssues.length, 1);
+  assert.equal(mirrorIssues[0].matchedBangla, 'কফি');
+  assert.equal(mirrorIssues[0].suggestedRepair, undefined);
+  assert.equal(
+    repairHomophoneAndTypoCollisions(mirrorEnglish, mirrorBangla),
+    mirrorBangla,
+    'Mirror check: "পশমি" behind "আস্তিনে" must not leak across the occurrence boundary to repair "কফি"'
+  );
+
+  // 4. B-SPEC Positive B-4.5B-P1: "frayed linen cuff at his wrist" -> "সুতির ছেঁড়া কফিতে"
+  const b45BP1English =
+    'He wiped the ink from his nib onto the frayed linen cuff at his wrist.';
+  const b45BP1Bangla =
+    'সে তার কব্জির কাছের সুতির ছেঁড়া কফিতে নিবের কালিটা মুছে নিল।';
+  const b45BP1Issues = lintParagraphHomophoneAndTypoCollisions(
+    b45BP1English,
+    b45BP1Bangla
+  );
+  assert.equal(b45BP1Issues.length, 1);
+  assert.equal(b45BP1Issues[0].association, 'local_garment_decisive');
+  const b45BP1Repaired = repairHomophoneAndTypoCollisions(
+    b45BP1English,
+    b45BP1Bangla
+  );
+  assert.ok(b45BP1Repaired.includes('সুতির ছেঁড়া আস্তিনে'));
+  assert.ok(!b45BP1Repaired.includes('কফিতে'));
+
+  // 5. B-SPEC Negative B-4.5B-N1: Legitimate beverage "coffee" + garment "cuff" in the same paragraph
+  const b45BN1English =
+    'A drop of black coffee spilled over the saucer and stained the white cuff of his shirt.';
+  const b45BN1Bangla =
+    'এক ফোঁটা কালো কফি পিরিচ উপচে পড়ে তার শার্টের সাদা আস্তিনে দাগ ফেলে দিল।';
+  const b45BN1Issues = lintParagraphHomophoneAndTypoCollisions(
+    b45BN1English,
+    b45BN1Bangla
+  );
+  assert.equal(
+    b45BN1Issues.length,
+    0,
+    'Legitimate "কালো কফি পিরিচ" grounded by decisive coffee evidence ("পিরিচ") must produce 0 findings'
+  );
+  assert.equal(
+    repairHomophoneAndTypoCollisions(b45BN1English, b45BN1Bangla),
+    b45BN1Bangla
+  );
+});
+
+test('T-4.5B-02: Orthographic typo table (পকেট-ছাকু -> পকেট-চাকু, quoin -> কয়েন flag-only) on story-04 [P08], B-4.5B-P2, and B-4.5B-N2', () => {
+  assert.ok(Array.isArray(ORTHOGRAPHIC_TYPO_REPAIRS));
+  assert.equal(ORTHOGRAPHIC_TYPO_REPAIRS.length, 2);
+
+  // 1. Set A D-21 (story-04 [P08]): "pocket-knife" -> "পকেট-ছাকুর" repaired to "পকেট-চাকুর"
+  const story04P08English =
+    'He opened the brass-riveted blade of his pocket-knife and scraped the solder.';
+  const story04P08Draft =
+    'তিনি তাঁর পকেট-চাকুর পিতলের রিভেট করা ফলাটি খুললেন এবং রাংঝালটা চেঁছে দেখলেন।';
+  const story04P08Corrupted =
+    'তিনি তাঁর পকেট-ছাকুর পিতলের রিভেট করা ফলাটি খুললেন এবং রাংঝালটা চেঁছে দেখলেন।';
+
+  const d21Issues = lintParagraphHomophoneAndTypoCollisions(
+    story04P08English,
+    story04P08Corrupted
+  );
+  assert.equal(d21Issues.length, 1);
+  assert.equal(d21Issues[0].kind, 'knife_strainer_typo');
+  assert.equal(d21Issues[0].matchedBangla, 'পকেট-ছাকুর');
+  assert.equal(d21Issues[0].suggestedRepair, 'পকেট-চাকুর');
+
+  const d21Repaired = repairHomophoneAndTypoCollisions(
+    story04P08English,
+    story04P08Corrupted
+  );
+  assert.ok(d21Repaired.includes('পকেট-চাকুর'));
+  assert.ok(!d21Repaired.includes('পকেট-ছাকুর'));
+
+  const d21Sanitized = sanitizeStage4EditedParagraph({
+    englishParagraph: story04P08English,
+    draftBanglaParagraph: story04P08Draft,
+    editedBanglaParagraph: story04P08Corrupted,
+  });
+  assert.ok(d21Sanitized.includes('পকেট-চাকুর'));
+  assert.ok(!d21Sanitized.includes('পকেট-ছাকুর'));
+
+  // 2. B-SPEC Positive B-4.5B-P2: "clasp-knife" + "quoin" -> repairs "ছাকু" to "চাকু" and flags "কয়েন" (flag-only)
+  const b45BP2English =
+    'He used a bone-handled clasp-knife to pare the sealing-wax from the corner quoin of the masonry.';
+  const b45BP2Bangla =
+    'সে গাঁথনির কোণের কয়েন থেকে গালাটা চেঁছে তোলার জন্য একটা হাড়ের হাতলওয়ালা ভাঁজ-করা ছাকু ব্যবহার করল।';
+  const b45BP2Issues = lintParagraphHomophoneAndTypoCollisions(
+    b45BP2English,
+    b45BP2Bangla
+  );
+  assert.equal(b45BP2Issues.length, 2);
+  assert.ok(
+    b45BP2Issues.some(
+      (i) =>
+        i.kind === 'knife_strainer_typo' &&
+        i.matchedBangla === 'ছাকু' &&
+        i.suggestedRepair === 'চাকু'
+    )
+  );
+  assert.ok(
+    b45BP2Issues.some(
+      (i) =>
+        i.kind === 'quoin_coin_homophone' &&
+        i.matchedBangla === 'কয়েন' &&
+        i.suggestedRepair === undefined
+    )
+  );
+  const b45BP2Repaired = repairHomophoneAndTypoCollisions(
+    b45BP2English,
+    b45BP2Bangla
+  );
+  assert.ok(b45BP2Repaired.includes('ভাঁজ-করা চাকু'));
+  assert.ok(!b45BP2Repaired.includes('ছাকু'));
+
+  // 3. B-SPEC Negative B-4.5B-N2: Legitimate "tea-strainer" + "bread-knife" in the same sentence -> 0 false positives
+  const b45BN2English =
+    'She rinsed the brass tea-strainer at the pump and laid the bread-knife beside the loaf.';
+  const b45BN2Bangla =
+    'সে কলের জলে পিতলের চায়ের ছাঁকনিটা ধুয়ে নিল এবং পাউরুটির পাশে রুটি-কাটার চাকুটা রাখল।';
+  assert.equal(
+    lintParagraphHomophoneAndTypoCollisions(b45BN2English, b45BN2Bangla).length,
+    0
+  );
+  assert.equal(
+    repairHomophoneAndTypoCollisions(b45BN2English, b45BN2Bangla),
+    b45BN2Bangla
+  );
+});
+
+// ============================================================================
+// PPH-4.5C — CONTEXTUAL VOCABULARY GUARD TESTS (T-4.5C-01 .. T-4.5C-06)
+// ============================================================================
+
+test('T-4.5C-01: CV-01 (dictate_speech_vs_write) flags "লিখে দিয়েছিলাম" for "dictated" on story-02 [P20] and reverts Stage 4 regression to Stage 3 draft without inventing replacement', () => {
+  assert.equal(CONTEXTUAL_VOCABULARY_GUARD_RULES.length, 6);
+
+  const story02P20English =
+    '“I dictated the three clauses to my nephew while he wrote them on the stamped paper,” Mr. Chatterjee said.';
+  const story02P20AccurateDraft =
+    '“আমার ভাইপো যখন স্ট্যাম্প কাগজে সেগুলো লিখছিল, তখন আমি তাকে তিনটি ধারা মুখে বলে লিখে দিয়েছিলাম,” চ্যাটার্জি সাহেব বললেন।';
+  const story02P20Corrupted =
+    '“আমার ভাইপো যখন স্ট্যাম্প কাগজে সেগুলো লিখছিল, তখন আমি তাকে তিনটি ধারা লিখে দিয়েছিলাম,” চ্যাটার্জি সাহেব বললেন।';
+
+  // Accurate draft with "মুখে বলে লিখে দিয়েছিলাম" passes with 0 findings
+  assert.equal(
+    lintParagraphContextualVocabulary(
+      story02P20English,
+      story02P20AccurateDraft
+    ).length,
+    0
+  );
+
+  // Corrupted "লিখে দিয়েছিলাম" (without "মুখে বলে") is flagged by CV-01
+  const cv01Issues = lintParagraphContextualVocabulary(
+    story02P20English,
+    story02P20Corrupted
+  );
+  assert.equal(cv01Issues.length, 1);
+  assert.equal(cv01Issues[0].code, 'CV-01');
+  assert.equal(cv01Issues[0].ruleId, 'dictate_speech_vs_write');
+  assert.equal(cv01Issues[0].enforcement, 'flag_and_draft_revert_only');
+  assert.equal(cv01Issues[0].suggestedReplacement, undefined);
+
+  // Stage 4 regression is reverted to the accurate Stage 3 draft
+  const sanitized = sanitizeStage4EditedParagraph({
+    englishParagraph: story02P20English,
+    draftBanglaParagraph: story02P20AccurateDraft,
+    editedBanglaParagraph: story02P20Corrupted,
+  });
+  assert.equal(sanitized, story02P20AccurateDraft);
+});
+
+test('T-4.5C-02: CV-02 (linger_tarry_vs_hide) flags "লুকিয়ে ছিলেন" for "lingered" on story-02 [P19] and reverts Stage 4 regression to Stage 3 draft', () => {
+  const story02P19English =
+    'Your father lingered on the verandah after the clerk had gone down the stairs.';
+  const story02P19AccurateDraft =
+    'কেরানি সিঁড়ি দিয়ে নেমে যাওয়ার পরও তোমার বাবা বারান্দায় কিছুক্ষণ রয়ে গিয়েছিলেন।';
+  const story02P19Corrupted =
+    'কেরানি সিঁড়ি দিয়ে নেমে যাওয়ার পরও তোমার বাবা বারান্দায় লুকিয়ে ছিলেন।';
+
+  assert.equal(
+    lintParagraphContextualVocabulary(
+      story02P19English,
+      story02P19AccurateDraft
+    ).length,
+    0
+  );
+
+  const cv02Issues = lintParagraphContextualVocabulary(
+    story02P19English,
+    story02P19Corrupted
+  );
+  assert.equal(cv02Issues.length, 1);
+  assert.equal(cv02Issues[0].code, 'CV-02');
+  assert.equal(cv02Issues[0].ruleId, 'linger_tarry_vs_hide');
+  assert.equal(cv02Issues[0].enforcement, 'flag_and_draft_revert_only');
+
+  const sanitized = sanitizeStage4EditedParagraph({
+    englishParagraph: story02P19English,
+    draftBanglaParagraph: story02P19AccurateDraft,
+    editedBanglaParagraph: story02P19Corrupted,
+  });
+  assert.equal(sanitized, story02P19AccurateDraft);
+});
+
+test('T-4.5C-03: CV-03 (metallurgical_temper) flags "ওজন ও মেজাজে" for iron "weight and temper" on story-04 [P33] and deterministically replaces with "ওজন ও কাঠিন্যে"', () => {
+  const story04P33English =
+    'Anyone can tell by the weight and temper of the links that these two rings were forged from soft bazaar iron.';
+  const story04P33Draft =
+    'শিকলের কড়িগুলোর ওজন ও মেজাজে যে কেউ বলে দিতে পারবে যে এই দুটি আংটা বাজারের নরম লোহা দিয়ে তৈরি।';
+
+  const cv03Issues = lintParagraphContextualVocabulary(
+    story04P33English,
+    story04P33Draft
+  );
+  assert.equal(cv03Issues.length, 1);
+  assert.equal(cv03Issues[0].code, 'CV-03');
+  assert.equal(cv03Issues[0].ruleId, 'metallurgical_temper');
+  assert.equal(cv03Issues[0].suggestedReplacement, 'ওজন ও কাঠিন্যে');
+
+  const sanitized = sanitizeStage4EditedParagraph({
+    englishParagraph: story04P33English,
+    draftBanglaParagraph: story04P33Draft,
+    editedBanglaParagraph: story04P33Draft,
+  });
+  assert.ok(sanitized.includes('ওজন ও কাঠিন্যে'));
+  assert.ok(!sanitized.includes('মেজাজে'));
+});
+
+test('T-4.5C-04: CV-05 (bone_dry_preserves_dryness) flags omitted dryness on story-05 [P04] "bone-dry heat" and restores from Stage 3 draft without manufacturing meaning', () => {
+  const story05P04English =
+    'It was an invisible column of bone-dry, blistering mineral heat that rose silently from the chasm twice a year.';
+  const story05P04Stage3Draft =
+    'এটি ছিল খটখটে শুষ্ক, প্রচণ্ড উত্তপ্ত খনিজ বাতাসের একটি অদৃশ্য স্তম্ভ, যা বছরে দুবার গভীর ফাটল থেকে নিঃশব্দে ওপরের দিকে উঠে আসত।';
+  const story05P04Stage4DroppedDry =
+    'এটি ছিল প্রচণ্ড, হাড়-জ্বালানো গরমের একটি অদৃশ্য স্তম্ভ, যা বছরে দুবার গভীর ফাটল থেকে নিঃশব্দে ওপরের দিকে উঠে আসত।';
+
+  assert.equal(
+    lintParagraphContextualVocabulary(
+      story05P04English,
+      story05P04Stage3Draft
+    ).length,
+    0
+  );
+
+  const cv05Issues = lintParagraphContextualVocabulary(
+    story05P04English,
+    story05P04Stage4DroppedDry
+  );
+  assert.equal(cv05Issues.length, 1);
+  assert.equal(cv05Issues[0].code, 'CV-05');
+  assert.equal(cv05Issues[0].ruleId, 'bone_dry_preserves_dryness');
+  assert.equal(cv05Issues[0].enforcement, 'flag_and_draft_revert_only');
+
+  const sanitized = sanitizeStage4EditedParagraph({
+    englishParagraph: story05P04English,
+    draftBanglaParagraph: story05P04Stage3Draft,
+    editedBanglaParagraph: story05P04Stage4DroppedDry,
+  });
+  assert.equal(sanitized, story05P04Stage3Draft);
+  assert.ok(/শুষ্ক|শুকনো|খটখটে/u.test(sanitized));
+});
+
+test('T-4.5C-05: CV-06 (digital_chat_pls) flags formal "দয়া করে" for WhatsApp "pls" on story-03 [P19] and deterministically replaces with "প্লিজ"', () => {
+  const story03P19English =
+    '*[Tania 5B - 3:03 PM]: Chacha pls do not poke the awning with the broom!! The cat is scared of the thunder!!*';
+  const story03P19Draft =
+    '*[তানিয়া ৫বি - ৩:০৩ পিএম]: চাচা দয়া করে ঝাড়ু দিয়ে চালের শেড খোঁচাবেন না!! বিড়ালটা মেঘের গর্জনে ভয় পেয়েছে!!*';
+
+  const cv06Issues = lintParagraphContextualVocabulary(
+    story03P19English,
+    story03P19Draft
+  );
+  assert.equal(cv06Issues.length, 1);
+  assert.equal(cv06Issues[0].code, 'CV-06');
+  assert.equal(cv06Issues[0].ruleId, 'digital_chat_pls');
+  assert.equal(cv06Issues[0].suggestedReplacement, 'প্লিজ');
+
+  const sanitized = sanitizeStage4EditedParagraph({
+    englishParagraph: story03P19English,
+    draftBanglaParagraph: story03P19Draft,
+    editedBanglaParagraph: story03P19Draft,
+  });
+  assert.ok(sanitized.includes('চাচা প্লিজ ঝাড়ু দিয়ে'));
+  assert.ok(!sanitized.includes('দয়া করে'));
+});
+
+test('T-4.5C-06: CV-04 (craft_founder_vs_inst_founder) in Stage 1 sanitizeSpecialistFalseFriendTranslation and Stage 4 lint/sanitizer on story-05 [P07, P11, P33], plus B-4.5C-P1, B-4.5C-N1, and B-4.5C-N2', () => {
+  // 1. Stage 1 sanitizeSpecialistFalseFriendTranslation craft-gated -founder repairs
+  assert.equal(
+    sanitizeSpecialistFalseFriendTranslation('glass-founder', 'কাঁচ-প্রতিষ্ঠাতা'),
+    'কাঁচ-ঢালাইকর'
+  );
+  assert.equal(
+    sanitizeSpecialistFalseFriendTranslation(
+      'glass-founders',
+      'কাঁচ-প্রতিষ্ঠাতাদের'
+    ),
+    'কাঁচ-ঢালাইকরদের'
+  );
+  assert.equal(
+    sanitizeSpecialistFalseFriendTranslation('founder-mark', 'প্রতিষ্ঠাতা-চিহ্ন'),
+    'ঢালাই-চিহ্ন'
+  );
+  // Institutional founder in Stage 1 is NOT altered
+  assert.equal(
+    sanitizeSpecialistFalseFriendTranslation(
+      'founder of the school',
+      'স্কুলের প্রতিষ্ঠাতা'
+    ),
+    'স্কুলের প্রতিষ্ঠাতা'
+  );
+
+  // 2. Set A D-08 (story-05 [P07, P11, P33]): Stage 4 craft founder repairs
+  const story05P07English =
+    'Though white cataracts had clouded the old master founder’s eyes ten winters ago, he could still read the heat of the kiln by the smell of pine resin.';
+  const story05P07Draft =
+    'দশ শীতকাল আগে পুরনো এই প্রতিষ্ঠাতা কারিগরের দুই চোখ সাদা ছানিতে ঢাকা পড়ে গেলেও, চুল্লির ইটের কিনারে পাইন রেজিন পোড়ার গন্ধ শুঁকেই তিনি সেই আগুনের উত্তাপ বুঝতে পারতেন।';
+  const p07Sanitized = sanitizeStage4EditedParagraph({
+    englishParagraph: story05P07English,
+    draftBanglaParagraph: story05P07Draft,
+    editedBanglaParagraph: story05P07Draft,
+  });
+  assert.ok(p07Sanitized.includes('ঢালাই-কারিগরের'));
+  assert.ok(!p07Sanitized.includes('প্রতিষ্ঠাতা'));
+
+  const story05P11English =
+    'To the guildhouse ledgers and the glass-founders, the basalt spur was known as the Anvil.';
+  const story05P11Draft =
+    'গিল্ডহাউসের খতিয়ান এবং কাঁচ-প্রতিষ্ঠাতাদের কাছে সেই ব্যাসল্ট পাথরের শৈলশিরাটিকে অ্যানভিল বলা হতো।';
+  const p11Sanitized = sanitizeStage4EditedParagraph({
+    englishParagraph: story05P11English,
+    draftBanglaParagraph: story05P11Draft,
+    editedBanglaParagraph: story05P11Draft,
+  });
+  assert.ok(p11Sanitized.includes('কাঁচ-ঢালাইকরদের'));
+  assert.ok(!p11Sanitized.includes('কাঁচ-প্রতিষ্ঠাতাদের'));
+
+  // 3. B-SPEC Positive B-4.5C-P1: All four contextual false friends in one paragraph
+  const b45CP1English =
+    'The old bell-founder tested the temper of the bronze rim while his clerk lingered by the door, waiting for him to dictate the foundry receipt.';
+  const b45CP1Bangla =
+    'বৃদ্ধ ঘণ্টা-প্রতিষ্ঠাতা ব্রোঞ্জের কিনারার মেজাজ পরীক্ষা করলেন, যখন তার কেরানি দরজার কাছে লুকিয়ে ছিল, ঢালাইখানার রসিদটা তিনি কখন লিখে দেবেন তার অপেক্ষায়।';
+  const b45CP1Issues = lintParagraphContextualVocabulary(
+    b45CP1English,
+    b45CP1Bangla
+  );
+  assert.equal(b45CP1Issues.length, 4);
+  assert.ok(b45CP1Issues.some((i) => i.code === 'CV-01'));
+  assert.ok(b45CP1Issues.some((i) => i.code === 'CV-02'));
+  assert.ok(b45CP1Issues.some((i) => i.code === 'CV-03'));
+  assert.ok(b45CP1Issues.some((i) => i.code === 'CV-04'));
+
+  // 4. B-SPEC Negative B-4.5C-N1: Institutional "founder of the orphanage", psychological "lost his temper", literal "hidden", and spoken "Please" -> 0 false positives
+  const b45CN1English =
+    'The founder of the orphanage lost his temper when he discovered the thief had hidden behind the coal-shed. "Please lock the gate at once," he told the watchman.';
+  const b45CN1Bangla =
+    "অনাথ আশ্রমের প্রতিষ্ঠাতা মেজাজ হারালেন যখন তিনি দেখলেন চোরটা কয়লা-ঘরের পেছনে লুকিয়ে ছিল। 'দয়া করে এক্ষুনি গেটটা তালা দিয়ে দাও,' তিনি দারোয়ানকে বললেন।";
+  assert.equal(
+    lintParagraphContextualVocabulary(b45CN1English, b45CN1Bangla).length,
+    0
+  );
+  assert.equal(
+    applyContextualVocabularyRepairs({
+      englishParagraph: b45CN1English,
+      draftBanglaParagraph: b45CN1Bangla,
+      editedBanglaParagraph: b45CN1Bangla,
+    }),
+    b45CN1Bangla
+  );
+
+  // 5. B-SPEC Negative B-4.5C-N2: Accurate "dictated" ("মুখে বলে লেখালেন") and "bone-dry" ("খটখটে শুকনো") -> 0 false positives
+  const b45CN2English =
+    'Sitting in the bone-dry courtyard, the lawyer dictated the petition to his clerk.';
+  const b45CN2Bangla =
+    'খটখটে শুকনো উঠোনে বসে উকিল সাহেব তাঁর মুহুরিকে দিয়ে দরখাস্তটা মুখে বলে লেখালেন।';
+  assert.equal(
+    lintParagraphContextualVocabulary(b45CN2English, b45CN2Bangla).length,
+    0
+  );
+});
