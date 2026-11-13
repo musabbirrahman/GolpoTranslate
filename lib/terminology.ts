@@ -9526,7 +9526,17 @@ export type NumericalFactKind =
   | 'ordinal'
   | 'age'
   | 'quantity'
-  | 'address';
+  | 'address'
+  | 'verbatim_literal'
+  | 'fraction'
+  | 'compound_measurement';
+
+export interface VerbatimProtectedSpan {
+  raw: string;
+  startIndex: number;
+  endIndex: number;
+  kind: 'keyboard_mash' | 'alphanumeric_code' | 'url_or_handle';
+}
 
 export interface EnglishNumericalFact {
   rawText: string;
@@ -9537,6 +9547,10 @@ export interface EnglishNumericalFact {
   unitOrNoun?: string;
   start: number;
   end: number;
+  wholeValue?: number;
+  numeratorValue?: number;
+  denominatorValue?: number;
+  decimalDigits?: number[];
 }
 
 export interface BanglaNumericalToken {
@@ -9669,6 +9683,205 @@ const ENGLISH_ORDINAL_TENS: Readonly<Record<string, number>> = {
   ninetieth: 90,
   hundredth: 100,
 };
+
+export const ENGLISH_FRACTIONAL_DENOMINATOR_WORDS: Readonly<Record<string, number>> = {
+  tenth: 10,
+  tenths: 10,
+  hundredth: 100,
+  hundredths: 100,
+  thousandth: 1000,
+  thousandths: 1000,
+  quarter: 4,
+  quarters: 4,
+  third: 3,
+  thirds: 3,
+  fifth: 5,
+  fifths: 5,
+  eighth: 8,
+  eighths: 8,
+  sixteenth: 16,
+  sixteenths: 16,
+};
+
+const WHITELISTED_ALPHANUMERIC_PATTERNS: ReadonlyArray<RegExp> = [
+  /^\d+(?:st|nd|rd|th)s?(?:-[A-Za-z]+)*$/i,
+  /^\d{1,2}(?::\d{2})?(?:a\.?m\.?|p\.?m\.?|o'clock)$/i,
+  /^\d{2,4}'?s$/i,
+  /^(?:2D|3D|4D|2G|3G|4G|5G|6G|A0|A1|A2|A3|A4|A5|A6|B4|B5|MP3|MP4|PDF|H2O|CO2|V6|V8|B12|D3|K9|G7|G8|G20|COVID-19|COVID19)$/i,
+  /^\d+(?:\.\d+)?-[a-z]{2,}(?:-[a-z]{2,})*$/,
+  /^\d+(?:\.\d+)?(?:mm|cm|km|mg|kg|ml|lb|lbs|oz|ft|yd|in|hr|hrs|min|mins|sec|secs|mph|kph|kmh|hz|khz|mhz|ghz|kb|mb|gb|tb|px|pt|em|rem|deg|db|v|w|kv|kw|mw|mah|ah)%?$/i,
+  /^(?:rs\.?|inr|usd|gbp|eur|tk|bdt|\$|£|₹|€)\d+(?:[.,]\d+)*$/i,
+];
+
+function isWhitelistedAlphanumericToken(token: string): boolean {
+  const trimmed = token.trim();
+  if (!trimmed) return true;
+  if (/^[\d.,:%+-]+$/.test(trimmed)) return true;
+  return WHITELISTED_ALPHANUMERIC_PATTERNS.some((pattern) =>
+    pattern.test(trimmed)
+  );
+}
+
+/**
+ * Deterministically extracts non-prose verbatim literal spans from an English paragraph
+ * on narrow structural signatures:
+ * 1. `keyboard_mash`: >= 3 repeated punctuation/bracket/symbol characters adjacent to letters/digits
+ *    (e.g., `]]]]]]77777ggggg`), or >= 3 identical consecutive digits and letters in a mixed token.
+ * 2. `alphanumeric_code`: fused serial/license/model identifiers (e.g., `INV-2049-B`, `TL/4402/98`,
+ *    `#ZX//90909-kk#`, `4444xYz99`).
+ * 3. `url_or_handle`: explicit URLs, emails, `@handle` tokens.
+ *
+ * Explicitly whitelists standard ordinals (`1st`–`9th`), time expressions (`11am`, `7pm`),
+ * decades (`1950s`), common tech/paper tokens (`3D`, `4G`, `5G`, `A4`, `MP3`, `PDF`),
+ * and normal italicized English prose.
+ */
+export function extractVerbatimProtectedSpans(
+  englishParagraph: string
+): VerbatimProtectedSpan[] {
+  const source = englishParagraph ?? '';
+  if (!source.trim()) return [];
+
+  const spans: VerbatimProtectedSpan[] = [];
+  const chunkRegex = /\S+/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = chunkRegex.exec(source)) !== null) {
+    const rawChunk = match[0];
+    const chunkStart = match.index;
+
+    // Split on em-dashes / en-dashes so tokens embedded as `—*]]]]]]77777ggggg*—` are isolated cleanly
+    const subChunkRegex = /[^—–]+/g;
+    let subMatch: RegExpExecArray | null;
+    while ((subMatch = subChunkRegex.exec(rawChunk)) !== null) {
+      let token = subMatch[0];
+      let localStart = chunkStart + subMatch.index;
+      let localEnd = localStart + token.length;
+
+      // Strip outer sentence punctuation and quotes (preserving `#`, `[`, `]`, `/`, `@`, etc.)
+      while (token.length > 0 && /^["“”'‘’(),.;:!?]/.test(token)) {
+        token = token.slice(1);
+        localStart++;
+      }
+      while (token.length > 0 && /["“”'‘’(),.;:!?]$/.test(token)) {
+        token = token.slice(0, -1);
+        localEnd--;
+      }
+
+      // Strip single paired or outer markdown emphasis `*` or `_` (when not a >=3 symbol run)
+      if (
+        token.length >= 2 &&
+        ((token.startsWith('*') &&
+          token.endsWith('*') &&
+          !/^\*{3,}/.test(token)) ||
+          (token.startsWith('_') &&
+            token.endsWith('_') &&
+            !/^_{3,}/.test(token)))
+      ) {
+        token = token.slice(1, -1);
+        localStart++;
+        localEnd--;
+      } else {
+        if (token.startsWith('*') && !/^\*{3,}/.test(token)) {
+          token = token.slice(1);
+          localStart++;
+        }
+        if (token.endsWith('*') && !/\*{3,}$/.test(token)) {
+          token = token.slice(0, -1);
+          localEnd--;
+        }
+      }
+
+      // Strip outer punctuation again in case it was inside `*...*`
+      while (token.length > 0 && /^["“”'‘’(),.;:!?]/.test(token)) {
+        token = token.slice(1);
+        localStart++;
+      }
+      while (token.length > 0 && /["“”'‘’(),.;:!?]$/.test(token)) {
+        token = token.slice(0, -1);
+        localEnd--;
+      }
+
+      // Strip trailing English possessive `'s` or `’s`
+      if (/(?:'s|’s)$/i.test(token) && token.length > 2) {
+        token = token.slice(0, -2);
+        localEnd -= 2;
+      }
+
+      if (token.length < 2) continue;
+      if (isWhitelistedAlphanumericToken(token)) continue;
+
+      // 1. URL, email, or @handle
+      if (
+        /^(?:https?:\/\/|www\.)\S+$/i.test(token) ||
+        /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(token) ||
+        /^@[A-Za-z0-9_.-]{2,}$/.test(token)
+      ) {
+        spans.push({
+          raw: token,
+          startIndex: localStart,
+          endIndex: localEnd,
+          kind: 'url_or_handle',
+        });
+        continue;
+      }
+
+      const hasLetter = /[A-Za-z]/.test(token);
+      const hasDigit = /\d/.test(token);
+
+      // 2. Keyboard-mash / symbol run:
+      //    - >= 3 repeated punctuation/bracket/symbol characters adjacent to letters or digits (e.g., `]]]]]]77777ggggg`)
+      //    - OR mixed letter+digit token with both >= 3 identical consecutive digits and >= 3 identical consecutive letters
+      const hasSymbolRun =
+        /(?:[\]\[\{\}\(\)<>~^|_+=#$%&*\\/!?-]){3,}/.test(token) &&
+        (hasLetter || hasDigit);
+      const hasRepeatedDigitAndLetterRun =
+        hasLetter &&
+        hasDigit &&
+        /(\d)\1{2,}/.test(token) &&
+        /([A-Za-z])\1{2,}/.test(token);
+
+      if (hasSymbolRun || hasRepeatedDigitAndLetterRun) {
+        spans.push({
+          raw: token,
+          startIndex: localStart,
+          endIndex: localEnd,
+          kind: 'keyboard_mash',
+        });
+        continue;
+      }
+
+      // 3. Alphanumeric identifier code:
+      //    Contains both letters and digits in a non-whitelisted token:
+      //    - Fused letter-digit transitions (`4444xYz99`), OR
+      //    - Code delimiters `/`, `#`, `_` joining letters and digits (`TL/4402/98`, `#ZX//90909-kk#`), OR
+      //    - Hyphenated serial/license/model code with an uppercase/code prefix or single-letter segment (`INV-2049-B`)
+      if (hasLetter && hasDigit) {
+        const hasFusedLetterDigit = /[A-Za-z]\d|\d[A-Za-z]/.test(token);
+        const hasCodeDelimiter = /[\/#_:]/.test(token);
+        const hasSerialHyphenStructure =
+          token.includes('-') &&
+          (/^[A-Za-z0-9]*[A-Z][A-Za-z0-9]*-/.test(token) ||
+            /-[A-Za-z]$/.test(token) ||
+            /-\d+-/.test(token));
+
+        if (
+          hasFusedLetterDigit ||
+          hasCodeDelimiter ||
+          hasSerialHyphenStructure
+        ) {
+          spans.push({
+            raw: token,
+            startIndex: localStart,
+            endIndex: localEnd,
+            kind: 'alphanumeric_code',
+          });
+        }
+      }
+    }
+  }
+
+  return spans;
+}
 
 interface BanglaCanonicalNumberInfo {
   value: number;
@@ -10353,7 +10566,8 @@ export function parseBanglaNumericalTokens(
         BANGLA_AGE_OR_YEAR_MARKERS.has(nextWord) ||
         BANGLA_MEASUREMENT_OR_TIME_UNITS.has(nextWord) ||
         nextWord === 'শত' ||
-        nextWord === 'হাজার';
+        nextWord === 'হাজার' ||
+        prevWord === 'দশমিক';
 
       if (!isFollowedByNumericContext) {
         if (
@@ -10878,6 +11092,79 @@ export function parseEnglishNumericalExpressions(
   const isSpanExcluded = (start: number, end: number): boolean =>
     excludedSpans.some((ex) => start < ex.end && end > ex.start);
 
+  // 1b. Extract verbatim protected spans (`keyboard_mash`, `alphanumeric_code`, `url_or_handle`)
+  //     and emit embedded digit runs as `kind: 'verbatim_literal'` facts.
+  const verbatimSpans = extractVerbatimProtectedSpans(source);
+  const verbatimFacts: EnglishNumericalFact[] = [];
+  for (const vSpan of verbatimSpans) {
+    const digitRegex = /\d+/g;
+    let dm: RegExpExecArray | null;
+    while ((dm = digitRegex.exec(vSpan.raw)) !== null) {
+      const dStart = vSpan.startIndex + dm.index;
+      const dEnd = dStart + dm[0].length;
+      if (!isSpanExcluded(dStart, dEnd)) {
+        verbatimFacts.push({
+          rawText: vSpan.raw,
+          numberText: dm[0],
+          value: Number(dm[0]),
+          kind: 'verbatim_literal',
+          isOrdinal: false,
+          unitOrNoun: vSpan.raw,
+          start: dStart,
+          end: dEnd,
+        });
+      }
+    }
+  }
+
+  // 1c. Identify numeric decimal expressions (e.g., "7.92 inches") outside verbatim/excluded spans
+  const decimalSpans: Array<{ start: number; end: number }> = [];
+  const decimalFacts: EnglishNumericalFact[] = [];
+  const decimalRegex = /\b(\d+)\.(\d+)(?:\s+([A-Za-z]+))?/g;
+  let decMatch: RegExpExecArray | null;
+  while ((decMatch = decimalRegex.exec(source)) !== null) {
+    const decStart = decMatch.index;
+    const numEnd = decStart + decMatch[1].length + 1 + decMatch[2].length;
+    const fullEnd = decMatch.index + decMatch[0].length;
+    const overlapsVerbatim = verbatimSpans.some(
+      (vs) => decStart < vs.endIndex && fullEnd > vs.startIndex
+    );
+    if (overlapsVerbatim || isSpanExcluded(decStart, fullEnd)) continue;
+
+    const wholeVal = Number(decMatch[1]);
+    const fracStr = decMatch[2];
+    const numVal = Number(fracStr);
+    const denomVal = Math.pow(10, fracStr.length);
+    const decDigits = fracStr.split('').map((c) => Number(c));
+    const unitWord = decMatch[3];
+    const hasUnit =
+      unitWord &&
+      !ENGLISH_NON_NOUN_FOLLOWERS.has(unitWord.toLowerCase());
+
+    decimalSpans.push({
+      start: decStart,
+      end: hasUnit ? fullEnd : numEnd,
+    });
+    decimalFacts.push({
+      rawText: source.slice(decStart, hasUnit ? fullEnd : numEnd),
+      numberText: `${decMatch[1]}.${decMatch[2]}`,
+      value: Number(`${decMatch[1]}.${decMatch[2]}`),
+      kind: 'compound_measurement',
+      isOrdinal: false,
+      ...(hasUnit ? { unitOrNoun: unitWord } : {}),
+      start: decStart,
+      end: hasUnit ? fullEnd : numEnd,
+      wholeValue: wholeVal,
+      numeratorValue: numVal,
+      denominatorValue: denomVal,
+      decimalDigits: decDigits,
+    });
+  }
+
+  const isInVerbatimOrDecimalSpan = (start: number, end: number): boolean =>
+    verbatimSpans.some((vs) => start < vs.endIndex && end > vs.startIndex) ||
+    decimalSpans.some((ds) => start < ds.end && end > ds.start);
+
   // 2. Tokenize English words (preserving `.` on `No.` when followed by space + number,
   //    and splitting hyphenated clock times / number pairs like "four-ten" or "six-thirty"
   //    where the first part is a unit 1..12 and the second part is also a cardinal number)
@@ -10885,6 +11172,11 @@ export function parseEnglishNumericalExpressions(
   const tokenRegex = /\b(?:No\.|[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)/g;
   let tm: RegExpExecArray | null;
   while ((tm = tokenRegex.exec(source)) !== null) {
+    const tokenStart = tm.index;
+    const tokenEnd = tm.index + tm[0].length;
+    if (isInVerbatimOrDecimalSpan(tokenStart, tokenEnd)) {
+      continue;
+    }
     const tokenText = tm[0];
     const tokenLower = tokenText.toLowerCase();
     const parts = tokenText.split('-');
@@ -10921,7 +11213,33 @@ export function parseEnglishNumericalExpressions(
     });
   }
 
-  const facts: EnglishNumericalFact[] = [];
+  const computeDecimalDigitsForFraction = (
+    numeratorVal: number,
+    denominatorVal: number
+  ): number[] | undefined => {
+    if (
+      denominatorVal === 10 ||
+      denominatorVal === 100 ||
+      denominatorVal === 1000
+    ) {
+      const width = Math.round(Math.log10(denominatorVal));
+      return String(numeratorVal)
+        .padStart(width, '0')
+        .split('')
+        .map((c) => Number(c));
+    }
+    const ratioStr = String(Number((numeratorVal / denominatorVal).toFixed(4)));
+    const dotIdx = ratioStr.indexOf('.');
+    if (dotIdx !== -1) {
+      return ratioStr
+        .slice(dotIdx + 1)
+        .split('')
+        .map((c) => Number(c));
+    }
+    return undefined;
+  };
+
+  const facts: EnglishNumericalFact[] = [...verbatimFacts, ...decimalFacts];
   let i = 0;
 
   while (i < rawTokens.length) {
@@ -10996,13 +11314,132 @@ export function parseEnglishNumericalExpressions(
       continue;
     }
 
-    // Guard on bare "one" (value === 1, non-ordinal, not part of compound like "one hundred"):
-    // Only treat bare "one" as an explicit numerical fact when followed by "year(s) old" or "o'clock"
-    // or in an explicit paragraph label ("Paragraph one"), never as a generic determiner/pronoun ("one umbrella", "for one").
     const nextTokenIdx = i + numMatch.consumedTokenCount;
     const nextTok = rawTokens[nextTokenIdx];
     const prevTok = i > 0 ? rawTokens[i - 1] : undefined;
 
+    // Pattern F1: Compound unit + fractional denominator
+    // `[Cardinal A] [Unit] and [Cardinal B] [Fractional Denominator]`
+    // e.g., "seven inches and ninety-two hundredths", "four grains and thirty-five thousandths"
+    if (
+      !numMatch.isOrdinal &&
+      nextTok &&
+      /^\s+$/.test(source.slice(numMatch.end, nextTok.start)) &&
+      /^[a-z]+$/i.test(nextTok.text) &&
+      !ENGLISH_NON_NOUN_FOLLOWERS.has(nextTok.lower)
+    ) {
+      const andTok = rawTokens[nextTokenIdx + 1];
+      if (
+        andTok &&
+        andTok.lower === 'and' &&
+        /^\s+$/.test(source.slice(nextTok.end, andTok.start)) &&
+        nextTokenIdx + 2 < rawTokens.length &&
+        /^\s+$/.test(source.slice(andTok.end, rawTokens[nextTokenIdx + 2].start))
+      ) {
+        const fracNumMatch = parseSingleOrCompoundEnglishNumberTokens(
+          rawTokens,
+          nextTokenIdx + 2,
+          source
+        );
+        if (fracNumMatch && !fracNumMatch.isOrdinal) {
+          const denomIdx = nextTokenIdx + 2 + fracNumMatch.consumedTokenCount;
+          const denomTok = rawTokens[denomIdx];
+          const denomVal = denomTok
+            ? ENGLISH_FRACTIONAL_DENOMINATOR_WORDS[denomTok.lower]
+            : undefined;
+          if (
+            denomTok &&
+            denomVal !== undefined &&
+            /^[\s-]+$/.test(source.slice(fracNumMatch.end, denomTok.start))
+          ) {
+            const compoundVal = Number(
+              (numMatch.value + fracNumMatch.value / denomVal).toFixed(6)
+            );
+            facts.push({
+              rawText: source.slice(numMatch.start, denomTok.end),
+              numberText: `${numMatch.numberText} and ${fracNumMatch.numberText} ${denomTok.text}`,
+              value: compoundVal,
+              kind: 'compound_measurement',
+              isOrdinal: false,
+              unitOrNoun: nextTok.text,
+              start: numMatch.start,
+              end: denomTok.end,
+              wholeValue: numMatch.value,
+              numeratorValue: fracNumMatch.value,
+              denominatorValue: denomVal,
+              decimalDigits: computeDecimalDigitsForFraction(
+                fracNumMatch.value,
+                denomVal
+              ),
+            });
+            i = denomIdx + 1;
+            continue;
+          }
+        }
+      }
+    }
+
+    // Pattern F2: Standalone fractional expression
+    // `[Cardinal B] [Fractional Denominator] (of a/an/the [Unit])?`
+    // e.g., "ninety-two hundredths of an inch", "three eighths of a dram", "six tenths of a millimetre"
+    if (
+      !numMatch.isOrdinal &&
+      nextTok &&
+      /^[\s-]+$/.test(source.slice(numMatch.end, nextTok.start)) &&
+      ENGLISH_FRACTIONAL_DENOMINATOR_WORDS[nextTok.lower] !== undefined
+    ) {
+      const denomVal = ENGLISH_FRACTIONAL_DENOMINATOR_WORDS[nextTok.lower];
+      let endIdx = nextTokenIdx + 1;
+      let endPos = nextTok.end;
+      let unitStr: string | undefined;
+
+      const ofTok = rawTokens[nextTokenIdx + 1];
+      const artTok = rawTokens[nextTokenIdx + 2];
+      const unitCandidateTok = rawTokens[nextTokenIdx + 3];
+      if (
+        ofTok &&
+        ofTok.lower === 'of' &&
+        /^\s+$/.test(source.slice(nextTok.end, ofTok.start)) &&
+        artTok &&
+        (artTok.lower === 'a' ||
+          artTok.lower === 'an' ||
+          artTok.lower === 'the' ||
+          artTok.lower === 'one') &&
+        /^\s+$/.test(source.slice(ofTok.end, artTok.start)) &&
+        unitCandidateTok &&
+        /^[a-z]+$/i.test(unitCandidateTok.text) &&
+        /^\s+$/.test(source.slice(artTok.end, unitCandidateTok.start))
+      ) {
+        endIdx = nextTokenIdx + 4;
+        endPos = unitCandidateTok.end;
+        unitStr = unitCandidateTok.text;
+      }
+
+      const fracVal = Number((numMatch.value / denomVal).toFixed(6));
+      facts.push({
+        rawText: source.slice(numMatch.start, endPos),
+        numberText: `${numMatch.numberText} ${nextTok.text}`,
+        value: fracVal,
+        kind: 'fraction',
+        isOrdinal: false,
+        ...(unitStr ? { unitOrNoun: unitStr } : {}),
+        start: numMatch.start,
+        end: endPos,
+        wholeValue: 0,
+        numeratorValue: numMatch.value,
+        denominatorValue: denomVal,
+        decimalDigits: computeDecimalDigitsForFraction(
+          numMatch.value,
+          denomVal
+        ),
+      });
+      i = endIdx;
+      continue;
+    }
+
+    // Guard on bare "one" (value === 1, non-ordinal, not part of compound like "one hundred"):
+    // Only treat bare "one" as an explicit numerical fact when followed by "year(s) old" or "o'clock"
+    // or in an explicit paragraph label ("Paragraph one"), never as a generic determiner/pronoun ("one umbrella", "for one").
     if (
       numMatch.value === 1 &&
       !numMatch.isOrdinal &&
@@ -11155,6 +11592,7 @@ export function parseEnglishNumericalExpressions(
     i += numMatch.consumedTokenCount;
   }
 
+  facts.sort((a, b) => a.start - b.start);
   return facts;
 }
 
@@ -11342,8 +11780,295 @@ export function lintParagraphNumericalConsistency(
   const matchedFactIndices = new Set<number>();
   const comparisonsByFactIdx = new Map<number, NumericalVerificationFinding>();
 
+  // Rule M-1 (`measurement_unit_distortion`):
+  // If English contains a fractional denominator word (`tenth/tenths`, `hundredth/hundredths`,
+  // `thousandth/thousandths`, `quarter/quarters`, `third/thirds`, `fifth/fifths`, `eighth/eighths`, `sixteenth/sixteenths`)
+  // and does NOT contain `percent` / `per cent` / `percentage` / `%`, flag Bangla bare `শতাংশ` / `শতাংশের` / `শতকরা` / `%`
+  // (when not accompanied by fractional qualifiers like `ভাগের` / `শতাংশ ভাগ`) as `measurement_unit_distortion`.
+  const englishHasFractionalDenominator =
+    englishFacts.some(
+      (f) =>
+        (f.kind === 'compound_measurement' || f.kind === 'fraction') &&
+        f.denominatorValue !== undefined
+    ) ||
+    /\b(?:tenths?|hundredths?|thousandths?|quarters?|thirds?|fifths?|eighths?|sixteenths?)\b/i.test(
+      englishText
+    );
+  const englishHasExplicitPercent =
+    /\b(?:percent|per\s+cent|percentage)\b|%/i.test(englishText);
+  const bareBanglaPercentMatch =
+    /(?:^|[^\u0980-\u09FF])(শতাংশ(?:ের|ে|ই|ও)?|শতকরা|%)(?=$|[^\u0980-\u09FF])/u.exec(
+      banglaText
+    );
+  const banglaHasFractionalPartQualifier = /ভাগের|শতাংশ\s*ভাগ/u.test(banglaText);
+  const isMeasurementUnitDistortion =
+    englishHasFractionalDenominator &&
+    !englishHasExplicitPercent &&
+    bareBanglaPercentMatch !== null &&
+    !banglaHasFractionalPartQualifier;
+
+  // PASS 0A: Validate `verbatim_literal` facts first.
+  // A `verbatim_literal` fact is satisfied ONLY if the exact ASCII substring or exact digit sequence
+  // inside the verbatim token is preserved — never by an unrelated number elsewhere in the paragraph.
+  const verbatimGroupOffsetByToken = new Map<string, number>();
+  const missingVerbatimTokenReported = new Set<string>();
+  for (let fIdx = 0; fIdx < englishFacts.length; fIdx++) {
+    const fact = englishFacts[fIdx];
+    if (fact.kind !== 'verbatim_literal') continue;
+
+    const fullVerbatimToken = fact.unitOrNoun ?? fact.rawText;
+    const groupIdx = (verbatimGroupOffsetByToken.get(fullVerbatimToken) ?? 0) + 1;
+    verbatimGroupOffsetByToken.set(fullVerbatimToken, groupIdx);
+
+    const escapedCapturingPattern = fullVerbatimToken
+      .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      .replace(/\d+/g, '([\\d\\u09E6-\\u09EF]+)');
+    const corruptedTokenRegex = new RegExp(escapedCapturingPattern, 'u');
+    const corruptedMatch = corruptedTokenRegex.exec(banglaText);
+
+    const capturedGroupText = corruptedMatch ? corruptedMatch[groupIdx] : undefined;
+    const isExactDigitGroupPreserved =
+      banglaText.includes(fullVerbatimToken) ||
+      capturedGroupText === fact.numberText;
+
+    if (isExactDigitGroupPreserved) {
+      if (corruptedMatch) {
+        const cStart = corruptedMatch.index;
+        const cEnd = cStart + corruptedMatch[0].length;
+        for (let bIdx = 0; bIdx < banglaTokens.length; bIdx++) {
+          const bt = banglaTokens[bIdx];
+          if (bt.start < cEnd && bt.end > cStart && bt.rawText === fact.numberText) {
+            consumedBanglaIndices.add(bIdx);
+          }
+        }
+      }
+      matchedFactIndices.add(fIdx);
+      comparisonsByFactIdx.set(fIdx, {
+        id: `num-match-p${pIndex}-f${fIdx}-verbatim`,
+        paragraphIndex: pIndex,
+        displayParagraphNumber: pIndex + 1,
+        status: 'no_mismatch',
+        kind: 'verbatim_literal',
+        expectedValue: fact.value,
+        detectedValue: fact.value,
+        matchedEnglishText: fullVerbatimToken,
+        expectedBangla: fullVerbatimToken,
+        acceptedBanglaForms: [fact.numberText],
+        detectedBanglaText: fullVerbatimToken,
+        severity: 'low',
+        englishExcerpt: buildExcerpt(englishText),
+        banglaExcerpt: buildExcerpt(banglaText),
+        description: `Paragraph ${pIndex + 1} preserves verbatim literal token "${fullVerbatimToken}".`,
+        suggestedFix: undefined,
+        findingSignature: computeNumericalFindingSignature({
+          kind: 'verbatim_literal',
+          expectedValue: fact.value,
+          detectedValue: fact.value,
+          expectedBangla: fullVerbatimToken,
+          detectedBanglaText: fullVerbatimToken,
+        }),
+      });
+    } else if (
+      !corruptedMatch &&
+      missingVerbatimTokenReported.has(fullVerbatimToken)
+    ) {
+      matchedFactIndices.add(fIdx);
+    } else {
+      if (!corruptedMatch) {
+        missingVerbatimTokenReported.add(fullVerbatimToken);
+      }
+      // Mark any Bangla number tokens that lie inside the corrupted verbatim token span as consumed
+      let detectedCorruptedText = corruptedMatch ? corruptedMatch[0] : undefined;
+      let detectedCorruptedVal: number | undefined;
+      if (capturedGroupText) {
+        const parsedGroup = normalizeBanglaNumberToken(capturedGroupText);
+        if (parsedGroup) {
+          detectedCorruptedVal = parsedGroup.value;
+        }
+      }
+      if (corruptedMatch) {
+        const cStart = corruptedMatch.index;
+        const cEnd = cStart + corruptedMatch[0].length;
+        for (let bIdx = 0; bIdx < banglaTokens.length; bIdx++) {
+          const bt = banglaTokens[bIdx];
+          if (bt.start < cEnd && bt.end > cStart) {
+            consumedBanglaIndices.add(bIdx);
+            if (detectedCorruptedVal === undefined) {
+              detectedCorruptedVal = bt.value;
+            }
+          }
+        }
+      }
+      if (!detectedCorruptedText) {
+        detectedCorruptedText = banglaText;
+      }
+      const editorialGuidance = `Restore exact verbatim literal token "${fullVerbatimToken}" (preserving ASCII digits "${fact.numberText}") instead of corrupted "${detectedCorruptedText}".`;
+      comparisonsByFactIdx.set(fIdx, {
+        id: `num-lint-p${pIndex}-f${fIdx}-verbatim-corruption`,
+        paragraphIndex: pIndex,
+        displayParagraphNumber: pIndex + 1,
+        status: 'confirmed_mismatch',
+        kind: 'verbatim_literal',
+        expectedValue: fact.value,
+        detectedValue: detectedCorruptedVal,
+        matchedEnglishText: fullVerbatimToken,
+        expectedBangla: fullVerbatimToken,
+        acceptedBanglaForms: [fact.numberText],
+        detectedBanglaText: detectedCorruptedText,
+        severity: 'high',
+        englishExcerpt: buildExcerpt(englishText),
+        banglaExcerpt: buildExcerpt(banglaText),
+        description: `[Verbatim Literal Corruption] Paragraph ${pIndex + 1} corrupted verbatim literal token "${fullVerbatimToken}" (${fact.numberText}) into "${detectedCorruptedText}".`,
+        editorialGuidance,
+        suggestedFix: undefined,
+        findingSignature: computeNumericalFindingSignature({
+          kind: 'verbatim_literal',
+          expectedValue: fact.value,
+          detectedValue: detectedCorruptedVal,
+          expectedBangla: fullVerbatimToken,
+          detectedBanglaText: detectedCorruptedText,
+        }),
+      });
+      matchedFactIndices.add(fIdx);
+    }
+  }
+
+  // PASS 0B: Validate `compound_measurement` and `fraction` facts (including Rule M-1 `measurement_unit_distortion`)
+  for (let fIdx = 0; fIdx < englishFacts.length; fIdx++) {
+    const fact = englishFacts[fIdx];
+    if (fact.kind !== 'compound_measurement' && fact.kind !== 'fraction') {
+      continue;
+    }
+
+    const wholeVal = fact.wholeValue ?? 0;
+    const numVal = fact.numeratorValue ?? fact.value;
+    const denomVal = fact.denominatorValue ?? 100;
+    const decDigits = fact.decimalDigits ?? [];
+
+    const consumeMatchingBanglaValue = (targetVal: number): number => {
+      for (let bIdx = 0; bIdx < banglaTokens.length; bIdx++) {
+        if (consumedBanglaIndices.has(bIdx)) continue;
+        if (banglaTokens[bIdx].value === targetVal) {
+          consumedBanglaIndices.add(bIdx);
+          return bIdx;
+        }
+      }
+      return -1;
+    };
+
+    if (isMeasurementUnitDistortion && bareBanglaPercentMatch) {
+      // Consume the whole/numerator tokens that were distorted into a percentage so they do not misfire on other facts
+      if (wholeVal > 0) consumeMatchingBanglaValue(wholeVal);
+      const numBnIdx = consumeMatchingBanglaValue(numVal);
+      const detectedPercentPhrase =
+        numBnIdx !== -1
+          ? `${banglaTokens[numBnIdx].rawText} ${bareBanglaPercentMatch[1]}`
+          : bareBanglaPercentMatch[1];
+      const wholeCanonical =
+        wholeVal > 0 ? getCanonicalBanglaNumberForms(wholeVal, 'cardinal').primary : '';
+      const numCanonical = getCanonicalBanglaNumberForms(numVal, 'cardinal').primary;
+      const denomCanonical = getCanonicalBanglaNumberForms(denomVal, 'cardinal').primary;
+      const expectedFractionBn =
+        wholeVal > 0
+          ? `${wholeCanonical} ${fact.unitOrNoun ?? ''} ও একশো ভাগের ${numCanonical} ভাগ`.replace(/\s+/g, ' ').trim()
+          : `${denomCanonical} ভাগের ${numCanonical} ভাগ`;
+      const editorialGuidance = `Replace percentage distortion "${detectedPercentPhrase}" with an accurate fractional or decimal measurement (e.g., "${expectedFractionBn}") to match "${fact.rawText}" (measurement_unit_distortion).`;
+
+      comparisonsByFactIdx.set(fIdx, {
+        id: `num-lint-p${pIndex}-f${fIdx}-measurement-unit-distortion`,
+        paragraphIndex: pIndex,
+        displayParagraphNumber: pIndex + 1,
+        status: 'confirmed_mismatch',
+        kind: fact.kind,
+        expectedValue: fact.value,
+        detectedValue: numVal,
+        matchedEnglishText: fact.rawText,
+        expectedBangla: expectedFractionBn,
+        acceptedBanglaForms: [expectedFractionBn],
+        detectedBanglaText: detectedPercentPhrase,
+        severity: 'high',
+        englishExcerpt: buildExcerpt(englishText),
+        banglaExcerpt: buildExcerpt(banglaText),
+        description: `[Measurement Unit Distortion (measurement_unit_distortion)] Paragraph ${pIndex + 1} mistranslates fractional measurement "${fact.rawText}" (${fact.value}) as percentage "${detectedPercentPhrase}".`,
+        editorialGuidance,
+        suggestedFix: undefined,
+        findingSignature: `deterministic_lint::numerical::measurement_unit_distortion::${fact.value}::${numVal}::${normalizeBanglaUnicode(expectedFractionBn)}::${normalizeBanglaUnicode(detectedPercentPhrase)}`,
+      });
+      matchedFactIndices.add(fIdx);
+      continue;
+    }
+
+    // Check valid fractional or decimal renderings in Bangla:
+    // 1. Fractional rendering: `wholeVal` (if > 0) + `numVal` (and optional `denomVal`)
+    // 2. Spoken/written decimal rendering with `দশমিক`: `wholeVal` (if > 0) + `দশমিক` + `decDigits` (or `numVal`)
+    // 3. Numeric decimal rendering (`7.92` or `৭.৯২`)
+    const hasWholeInBn =
+      wholeVal === 0 ||
+      banglaTokens.some(
+        (bt, idx) => !consumedBanglaIndices.has(idx) && bt.value === wholeVal
+      );
+    const hasNumeratorInBn = banglaTokens.some(
+      (bt, idx) => !consumedBanglaIndices.has(idx) && bt.value === numVal
+    );
+    const hasDashomik = /দশমিক/u.test(banglaText);
+    const nonZeroDecDigits = decDigits.filter((d) => d !== 0);
+    const hasDecimalDigitsInBn =
+      hasDashomik &&
+      nonZeroDecDigits.length > 0 &&
+      nonZeroDecDigits.every((d) =>
+        banglaTokens.some(
+          (bt, idx) => !consumedBanglaIndices.has(idx) && bt.value === d
+        )
+      );
+
+    if (hasWholeInBn && (hasNumeratorInBn || hasDecimalDigitsInBn)) {
+      if (wholeVal > 0) consumeMatchingBanglaValue(wholeVal);
+      if (hasNumeratorInBn) {
+        consumeMatchingBanglaValue(numVal);
+      } else if (hasDecimalDigitsInBn) {
+        for (const d of decDigits) {
+          consumeMatchingBanglaValue(d);
+        }
+      }
+      // Also consume the denominator token (e.g., `একশো` = 100, `হাজার` = 1000, `আট` = 8, `দশ` = 10) if present
+      consumeMatchingBanglaValue(denomVal);
+
+      matchedFactIndices.add(fIdx);
+      comparisonsByFactIdx.set(fIdx, {
+        id: `num-match-p${pIndex}-f${fIdx}-v${fact.value}`,
+        paragraphIndex: pIndex,
+        displayParagraphNumber: pIndex + 1,
+        status: 'no_mismatch',
+        kind: fact.kind,
+        expectedValue: fact.value,
+        detectedValue: fact.value,
+        matchedEnglishText: fact.rawText,
+        expectedBangla: String(fact.value),
+        acceptedBanglaForms: [String(fact.value)],
+        detectedBanglaText: fact.rawText,
+        severity: 'low',
+        englishExcerpt: buildExcerpt(englishText),
+        banglaExcerpt: buildExcerpt(banglaText),
+        description: `Paragraph ${pIndex + 1} accurately renders fractional/compound measurement "${fact.rawText}" (${fact.value}).`,
+        suggestedFix: undefined,
+        findingSignature: computeNumericalFindingSignature({
+          kind: fact.kind,
+          expectedValue: fact.value,
+          detectedValue: fact.value,
+          expectedBangla: String(fact.value),
+          detectedBanglaText: fact.rawText,
+        }),
+      });
+    } else {
+      // Partially consume wholeVal and denomVal if present so any conflicting numerator pairs cleanly in PASS 2B
+      if (wholeVal > 0) consumeMatchingBanglaValue(wholeVal);
+      consumeMatchingBanglaValue(denomVal);
+    }
+  }
+
   // PASS 1: Match English numerical facts whose exact numeric value is present in `banglaTokens`
   for (let fIdx = 0; fIdx < englishFacts.length; fIdx++) {
+    if (matchedFactIndices.has(fIdx)) continue;
     const fact = englishFacts[fIdx];
 
     // Prefer a Bangla token with matching value AND compatible contextKind, otherwise any unconsumed token with matching value
@@ -11401,12 +12126,21 @@ export function lintParagraphNumericalConsistency(
   //    or age ("এক বছর") construction, since English "a"/"an" routinely translates to "একটি"/"একটা"/"একজন".
   // 2. Exclude Bangla "বারোটা"/"বারোটার"/"বারোটাই" (value === 12) when preceded by "দুপুর" and the English source
   //    contains "noon" or "midday", since "দুপুর বারোটা" is the idiomatic Bangla rendering of "noon".
+  // 3. Exclude Bangla tokens that lie inside a preserved verbatim protected span.
   const englishHasNoonOrMidday = /\b(?:noon|midday)\b/i.test(englishText);
   const candidateConflictingBnIndices = banglaTokens
     .map((_, idx) => idx)
     .filter((bIdx) => {
       if (consumedBanglaIndices.has(bIdx)) return false;
       const tok = banglaTokens[bIdx];
+      const isInsidePreservedVerbatim = englishFacts.some(
+        (ef) =>
+          ef.kind === 'verbatim_literal' &&
+          ef.unitOrNoun &&
+          banglaText.includes(ef.unitOrNoun) &&
+          tok.rawText === ef.numberText
+      );
+      if (isInsidePreservedVerbatim) return false;
       if (
         tok.value === 1 &&
         !tok.isDigit &&

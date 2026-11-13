@@ -18,6 +18,7 @@ import { formatMemoryPromptBlock, formatStyleDirectiveBlock } from './chunker';
 import {
   extractContextualSenseKey,
   extractEnglishSurfaceAndSense,
+  extractVerbatimProtectedSpans,
   filterGlossaryForChunk,
   findEnglishTermOccurrences,
   formatGlossaryForPrompt,
@@ -33,6 +34,7 @@ import {
   normalizeStage5IssueSeverity,
   normalizeStage5IssueType,
   normalizeTerminologyItem,
+  parseEnglishNumericalExpressions,
   separateCanonicalAndExplanatoryBangla,
   splitTextIntoStage1Windows,
   validateStage3DiscoveredTerms,
@@ -1937,6 +1939,48 @@ export function buildCrossChunkContinuityBlock(params: {
 - CANONICAL TERMINOLOGY ONLY (NO EXPLANATORY GLOSS LEAKAGE): Use ONLY the concise canonical Bangla rendering for recurring places, phenomena, and terms across chunks (e.g., "হ্যারো-টাইড", "দ্য ফিঙ্গার", "থ্রেনেট"). NEVER insert or repeat dictionary definitions, translator reference meanings, or parenthetical explanatory glosses (such as "হ্যারো-টাইড (সর্বনাশা জোয়ার)") into narrative prose or dialogue—even if an earlier draft or legacy note mentioned an explanation—unless the English source sentence itself literally contains parentheses.`;
 }
 
+function buildVerbatimAndMeasurementPromptBlock(
+  englishParagraphs: ReadonlyArray<string>
+): string {
+  const uniqueVerbatimTokens: string[] = [];
+  let hasFractionalOrCompoundMeasurement = false;
+
+  for (const para of englishParagraphs) {
+    if (typeof para !== 'string' || !para.trim()) continue;
+    const vSpans = extractVerbatimProtectedSpans(para);
+    for (const vs of vSpans) {
+      if (!uniqueVerbatimTokens.includes(vs.raw)) {
+        uniqueVerbatimTokens.push(vs.raw);
+      }
+    }
+    const facts = parseEnglishNumericalExpressions(para);
+    if (
+      facts.some(
+        (f) =>
+          (f.kind === 'compound_measurement' || f.kind === 'fraction') &&
+          f.denominatorValue !== undefined
+      )
+    ) {
+      hasFractionalOrCompoundMeasurement = true;
+    }
+  }
+
+  const blocks: string[] = [];
+  if (uniqueVerbatimTokens.length > 0) {
+    const tokenList = uniqueVerbatimTokens.map((t) => `"${t}"`).join(', ');
+    blocks.push(
+      `[VERBATIM LITERAL TOKEN LOCK]:\n- Preserve the following non-prose literal/code/symbol token(s) character-for-character in exact ASCII form (${tokenList}). Never translate, transliterate, or substitute their embedded digits with other numbers in the paragraph.`
+    );
+  }
+  if (hasFractionalOrCompoundMeasurement) {
+    blocks.push(
+      `[MEASUREMENT & FRACTION PRECISION RULE]:\n- Fractional denominator words ("tenths", "hundredths", "thousandths", "quarters", "thirds", "fifths", "eighths", "sixteenths") in physical measurements denote fractions of a unit (e.g., "এক ইঞ্চির একশো ভাগের বিরানব্বই ভাগ" or decimal "সাত দশমিক নয় দুই ইঞ্চি"), NEVER percentages ("শতাংশ" / "শতকরা" / "%"). Use "শতাংশ" / "শতকরা" only when the English source explicitly states "percent" / "per cent" / "%".`
+    );
+  }
+
+  return blocks.join('\n\n');
+}
+
 /**
  * Stage 3 — Faithful Literary Translation (Chunk-Aware & Paragraph-Aligned with Discovery Validation)
  */
@@ -1986,6 +2030,10 @@ export async function translateChunkFaithfully(params: {
     .map((p, idx) => `[Paragraph ${idx}]:\n${p}`)
     .join('\n\n');
 
+  const verbatimAndMeasurementBlock = buildVerbatimAndMeasurementPromptBlock(
+    params.paragraphs
+  );
+
   const prompt = `Translate the following ${params.paragraphs.length} English literary paragraphs into exceptionally natural, fluent, expressive Bangla (বাংলা).
 
 ${contextSummary}
@@ -1994,7 +2042,7 @@ ${styleBlock}
 
 ${memoryBlock}
 ${previousChunkSection}
-${crossChunkContinuityBlock}
+${crossChunkContinuityBlock}${verbatimAndMeasurementBlock ? `\n${verbatimAndMeasurementBlock}` : ''}
 
 MANDATORY LITERARY TRANSLATION RULES:
 1. NATIVE LITERARY BANGLA & CLAUSE RESTRUCTURING (প্রাকৃতিক বাক্যগঠন ও চলিত বাংলা):
@@ -2386,6 +2434,54 @@ export function sanitizeStage4EditedParagraph(params: {
     return draft;
   }
 
+  // 2b. PPH-4.1: Enforce verbatim protected spans (`extractVerbatimProtectedSpans`).
+  //     If the Stage 3 draft contains `span.raw` and the Stage 4 candidate does not,
+  //     deterministically splice `span.raw` back in when surrounding delimiters/structure are intact,
+  //     or revert the paragraph to the Stage 3 draft.
+  const verbatimSpans = extractVerbatimProtectedSpans(english);
+  for (const span of verbatimSpans) {
+    if (draft.includes(span.raw) && !edited.includes(span.raw)) {
+      let restored = false;
+
+      // Strategy A: Structural prefix/suffix match where embedded digits were mutated into Bangla or other digits
+      // (e.g., `*]]]]]]৪০০ggggg*` -> `*]]]]]]77777ggggg*`, `#ZX//৮০-kk#` -> `#ZX//90909-kk#`, `4444xYz১৫` -> `4444xYz99`)
+      if (/\d/.test(span.raw)) {
+        const escapedPattern = span.raw
+          .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+          .replace(/\d+/g, '[\\d\\u09E6-\\u09EF]+');
+        const corruptedRegex = new RegExp(escapedPattern, 'gu');
+        const matches = [...edited.matchAll(corruptedRegex)];
+        if (matches.length === 1) {
+          edited = edited.replace(corruptedRegex, span.raw);
+          restored = edited.includes(span.raw);
+        }
+      }
+
+      // Strategy B: Surrounding delimiter match (e.g., `—*...*—` or `*...*` when single italicized span)
+      if (!restored && draft.includes(`*${span.raw}*`)) {
+        const emDashItalicRegex = /—\*[^*]+\*—/gu;
+        const emDashMatches = [...edited.matchAll(emDashItalicRegex)];
+        if (
+          draft.includes(`—*${span.raw}*—`) &&
+          emDashMatches.length === 1
+        ) {
+          edited = edited.replace(emDashItalicRegex, `—*${span.raw}*—`);
+          restored = edited.includes(span.raw);
+        } else if (editedItalics === 1) {
+          const singleItalicRegex = /\*[^*\n]+\*/u;
+          if (singleItalicRegex.test(edited)) {
+            edited = edited.replace(singleItalicRegex, `*${span.raw}*`);
+            restored = edited.includes(span.raw);
+          }
+        }
+      }
+
+      if (!restored) {
+        return draft;
+      }
+    }
+  }
+
   // 3. Guard against introducing new deterministic numerical mismatches in Stage 4
   const draftNumLint = lintParagraphNumericalConsistency({
     index: 0,
@@ -2608,12 +2704,16 @@ export async function runLiteraryEditingPass(params: {
       )
       .join('\n\n---\n\n');
 
+    const verbatimAndMeasurementBlock = buildVerbatimAndMeasurementPromptBlock(
+      win.englishParagraphs
+    );
+
     const prompt = `Run Stage 4 Literary Editing on the following Bangla translation draft.
 ${windowHeader}${storyContextBlock ? `\n${storyContextBlock}\n` : ''}
 ${styleBlock}
 
 ${memoryBlock}
-${precedingContinuitySection}${lintGuidanceBlock ? `${lintGuidanceBlock}\n` : ''}
+${precedingContinuitySection}${lintGuidanceBlock ? `${lintGuidanceBlock}\n` : ''}${verbatimAndMeasurementBlock ? `${verbatimAndMeasurementBlock}\n` : ''}
 EDITORIAL OBJECTIVES & LITERARY BANGLA CRAFT PRINCIPLES:
 1. NATURAL BANGLA CLAUSE RESTRUCTURING & RHYTHM (ছন্দ ও প্রবাহ):
    - Stage 4 is an editorial refinement pass, NOT a mandatory rewriting stage: elevate sentence flow, reading cadence, and idiomatic চলিত বাংলা where the DRAFT BANGLA is genuinely awkward, unnatural, or translationese ("আক্ষরিক অনুবাদ-গন্ধ"), while leaving sentences that are already accurate, natural, and true to the character's voice unchanged. Never rewrite a sentence merely to demonstrate stylistic activity, and never sacrifice semantic fidelity for elegance.

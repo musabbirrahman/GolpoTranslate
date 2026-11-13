@@ -87,6 +87,8 @@ import {
   numericalFindingToVerificationIssue,
   lintParagraphNumericalConsistency,
   lintChapterNumericalConsistency,
+  extractVerbatimProtectedSpans,
+  ENGLISH_FRACTIONAL_DENOMINATOR_WORDS,
   VALID_STAGE5_ISSUE_TYPES,
   normalizeStage5IssueType,
   normalizeStage5IssueSeverity,
@@ -19448,3 +19450,240 @@ test('Post-Pilot Hardening 3 (PPH-3): Stage 1 Glossary Normalization & Explanato
     )
   );
 });
+
+test('PPH-4.1 T-4.1-01 (verbatim_keyboard_mash_preservation): extractVerbatimProtectedSpans extracts non-prose literal spans and whitelists ordinals, times, decades, tech tokens, and normal italics', () => {
+  const story03P32English =
+    '"People pay four hundred percent more for narrative." He dragged the mouse to the corner of the screen, then typed a string of random characters—*]]]]]]77777ggggg*—into the empty search bar just to hear the keys clatter, before hitting backspace and clearing it again.';
+
+  const spans = extractVerbatimProtectedSpans(story03P32English);
+  assert.equal(spans.length, 1);
+  assert.equal(spans[0].raw, ']]]]]]77777ggggg');
+  assert.equal(spans[0].kind, 'keyboard_mash');
+  assert.equal(
+    story03P32English.slice(spans[0].startIndex, spans[0].endIndex),
+    ']]]]]]77777ggggg'
+  );
+
+  // Alphanumeric identifier codes & URLs/handles
+  const codeSpans = extractVerbatimProtectedSpans(
+    'Reference INV-2049-B and license TL/4402/98 were logged by @desk_clerk_01 at https://example.org/status.'
+  );
+  assert.deepEqual(
+    codeSpans.map((s) => ({ raw: s.raw, kind: s.kind })),
+    [
+      { raw: 'INV-2049-B', kind: 'alphanumeric_code' },
+      { raw: 'TL/4402/98', kind: 'alphanumeric_code' },
+      { raw: '@desk_clerk_01', kind: 'url_or_handle' },
+      { raw: 'https://example.org/status', kind: 'url_or_handle' },
+    ]
+  );
+
+  // Negative guards: ordinals, clock times, decades, tech tokens, and normal italicized English sentences must never be locked
+  assert.equal(
+    extractVerbatimProtectedSpans(
+      '*Invoice still shows old trade license number.*'
+    ).length,
+    0
+  );
+  assert.equal(
+    extractVerbatimProtectedSpans(
+      '*Why did Father ever sign that deed?* Please send the file before 11am or 7pm tomorrow.'
+    ).length,
+    0
+  );
+  assert.equal(
+    extractVerbatimProtectedSpans(
+      'In the 1950s and 1970s, the 1st, 2nd, 3rd, and 14th editions were printed on A4 paper before MP3, PDF, 3D, 4G, and 5G existed.'
+    ).length,
+    0
+  );
+});
+
+test('PPH-4.1 T-4.1-02 (stage4_reverts_corrupted_alphanumeric_span): lintParagraphNumericalConsistency flags *]]]]]]৪০০ggggg* and sanitizeStage4EditedParagraph restores *]]]]]]77777ggggg* while keeping "চারশো শতাংশ"', async () => {
+  const story03P32English =
+    '"People pay four hundred percent more for narrative." He dragged the mouse to the corner of the screen, then typed a string of random characters—*]]]]]]77777ggggg*—into the empty search bar just to hear the keys clatter, before hitting backspace and clearing it again.';
+  const story03P32Stage3Draft =
+    '“মানুষ ন্যারেটিভের জন্য চারশো শতাংশ বেশি দাম দেয়।” সে মাউসটাকে স্ক্রিনের কোণায় টেনে নিয়ে গেল, এরপর খালি সার্চ বারে স্রেফ কি-বোর্ডের খটখট আওয়াজ শোনার জন্য একগাদা এলোমেলো অক্ষর টাইপ করল—*]]]]]]77777ggggg*—তারপর ব্যাকস্পেস চেপে আবার তা মুছে ফেলল।';
+  const story03P32Stage4Corrupted =
+    '“মানুষ গল্পের জন্য চারশো শতাংশ বেশি দাম দেয়।” সে মাউসটাকে স্ক্রিনের কোণায় টেনে নিয়ে গেল, তারপর স্রেফ কি-বোর্ডের খটখট আওয়াজ শোনার জন্য খালি সার্চ বারে একগাদা এলোমেলো অক্ষর টাইপ করল—*]]]]]]৪০০ggggg*—তারপর ব্যাকস্পেস চেপে আবার তা মুছে ফেলল।';
+
+  // 1. parseEnglishNumericalExpressions extracts both 400 and 77777 (verbatim_literal)
+  const facts = parseEnglishNumericalExpressions(story03P32English);
+  assert.equal(facts.length, 2);
+  assert.equal(facts[0].value, 400);
+  assert.equal(facts[1].value, 77777);
+  assert.equal(facts[1].kind, 'verbatim_literal');
+
+  // 2. lintParagraphNumericalConsistency passes Stage 3 draft cleanly and flags Stage 4's *]]]]]]৪০০ggggg*
+  const draftLint = lintParagraphNumericalConsistency({
+    index: 31,
+    englishText: story03P32English,
+    banglaText: story03P32Stage3Draft,
+  });
+  assert.equal(draftLint.confirmedMismatches.length, 0);
+  assert.equal(draftLint.issues.length, 0);
+
+  const corruptedLint = lintParagraphNumericalConsistency({
+    index: 31,
+    englishText: story03P32English,
+    banglaText: story03P32Stage4Corrupted,
+  });
+  assert.equal(corruptedLint.confirmedMismatches.length, 1);
+  assert.equal(corruptedLint.confirmedMismatches[0].kind, 'verbatim_literal');
+  assert.equal(corruptedLint.confirmedMismatches[0].expectedValue, 77777);
+  assert.equal(
+    corruptedLint.confirmedMismatches[0].detectedBanglaText,
+    ']]]]]]৪০০ggggg'
+  );
+  assert.equal(corruptedLint.issues.length, 1);
+
+  // 3. sanitizeStage4EditedParagraph restores *]]]]]]77777ggggg* while preserving Stage 4's valid prose edit ("মানুষ গল্পের জন্য চারশো শতাংশ বেশি দাম দেয়।")
+  const sanitized = sanitizeStage4EditedParagraph({
+    englishParagraph: story03P32English,
+    draftBanglaParagraph: story03P32Stage3Draft,
+    editedBanglaParagraph: story03P32Stage4Corrupted,
+  });
+  assert.ok(sanitized.includes('*]]]]]]77777ggggg*'));
+  assert.ok(!sanitized.includes('*]]]]]]৪০০ggggg*'));
+  assert.ok(sanitized.includes('মানুষ গল্পের জন্য চারশো শতাংশ বেশি দাম দেয়।'));
+
+  // 4. Verify Stage 4 prompt injection fires when window contains verbatim span
+  let capturedStage4Prompt = '';
+  await runLiteraryEditingPass({
+    englishParagraphs: [story03P32English],
+    banglaParagraphs: [story03P32Stage3Draft],
+    styleProfile: null,
+    characters: [],
+    terminology: [],
+    styleControls: {
+      preserveAuthorStyle: true,
+      naturalness: 'highly_natural',
+      literaryExpression: 'balanced',
+      languageComplexity: 'moderate',
+      dialogueStyle: 'more_conversational',
+      translationApproach: 'faithful_literary',
+    },
+    stage4Executor: async ({ prompt }) => {
+      capturedStage4Prompt = prompt;
+      return {
+        editedParagraphs: [story03P32Stage4Corrupted],
+        editorialNotes: [],
+        editorialChanges: [],
+      };
+    },
+  });
+  assert.ok(capturedStage4Prompt.includes('[VERBATIM LITERAL TOKEN LOCK]'));
+  assert.ok(capturedStage4Prompt.includes(']]]]]]77777ggggg'));
+});
+
+test('PPH-4.1 T-4.1-03 (fractional_hundredths_rejects_shatangsha): "seven inches and ninety-two hundredths" flags "সাত ইঞ্চি এবং ৯২ শতাংশের ব্যবধান" with measurement_unit_distortion while passing legitimate percentages', () => {
+  assert.equal(ENGLISH_FRACTIONAL_DENOMINATOR_WORDS.hundredths, 100);
+  assert.equal(ENGLISH_FRACTIONAL_DENOMINATOR_WORDS.thousandths, 1000);
+  assert.equal(ENGLISH_FRACTIONAL_DENOMINATOR_WORDS.eighths, 8);
+
+  const story04P02English =
+    'Beside it lay the brass gauge—seven inches and ninety-two hundredths between the inner jaws—which old Mr. Kelsall had brought from the Mint before the fever of fifty-nine carried him off.';
+  const story04P02DefectiveBangla =
+    'তার পাশেই রাখা ছিল পিতলের গজটা—ভেতরের দুই চোয়ালের মাঝখানে সাত ইঞ্চি এবং ৯২ শতাংশের ব্যবধান—যা বৃদ্ধ মিস্টার কেলসাল উনষাট সালের জ্বরে মারা যাওয়ার আগে টাঁকশাল থেকে নিয়ে এসেছিলেন।';
+
+  const lintResult = lintParagraphNumericalConsistency({
+    index: 1,
+    englishText: story04P02English,
+    banglaText: story04P02DefectiveBangla,
+  });
+
+  assert.equal(lintResult.confirmedMismatches.length, 1);
+  assert.equal(lintResult.issues.length, 1);
+  assert.equal(
+    lintResult.confirmedMismatches[0].kind,
+    'compound_measurement'
+  );
+  assert.equal(lintResult.confirmedMismatches[0].expectedValue, 7.92);
+  assert.ok(
+    lintResult.confirmedMismatches[0].description.includes(
+      'measurement_unit_distortion'
+    )
+  );
+  assert.ok(
+    lintResult.issues[0].description.includes('measurement_unit_distortion')
+  );
+
+  // Negative guards: legitimate percentages and land-area "decimals" must pass with zero issues
+  const validPercentLint = lintParagraphNumericalConsistency({
+    index: 0,
+    englishText: '"People pay four hundred percent more for narrative."',
+    banglaText: '“মানুষ গল্পের জন্য চারশো শতাংশ বেশি দাম দেয়।”',
+  });
+  assert.equal(validPercentLint.confirmedMismatches.length, 0);
+  assert.equal(validPercentLint.issues.length, 0);
+
+  const validLandDecimalLint = lintParagraphNumericalConsistency({
+    index: 0,
+    englishText:
+      'The mutation deed recorded fourteen decimals of high orchard land beside the tank.',
+    banglaText:
+      'নামজারি দলিলে পুকুরপাড়ের উঁচু বাগানবাড়ির চৌদ্দ শতাংশ জমি লিপিবদ্ধ ছিল।',
+  });
+  assert.equal(validLandDecimalLint.confirmedMismatches.length, 0);
+  assert.equal(validLandDecimalLint.issues.length, 0);
+});
+
+test('PPH-4.1 T-4.1-04 (compound_measurement_gauge_lint): fractional and decimal Bangla renderings for "seven inches and ninety-two hundredths" pass cleanly', async () => {
+  const story04P02English =
+    'Beside it lay the brass gauge—seven inches and ninety-two hundredths between the inner jaws—which old Mr. Kelsall had brought from the Mint before the fever of fifty-nine carried him off.';
+
+  const decimalWordsBangla =
+    'তার পাশেই রাখা ছিল পিতলের গজটা—ভেতরের দুই চোয়ালের মাঝখানে সাত দশমিক নয় দুই ইঞ্চির ব্যবধান—যা বৃদ্ধ মিস্টার কেলসাল উনষাট সালের জ্বরে মারা যাওয়ার আগে টাঁকশাল থেকে নিয়ে এসেছিলেন।';
+  const fractionalWordsBangla =
+    'তার পাশেই রাখা ছিল পিতলের গজটা—ভেতরের দুই চোয়ালের মাঝখানে সাত ইঞ্চি ও এক ইঞ্চির একশো ভাগের বিরানব্বই ভাগের ব্যবধান—যা বৃদ্ধ মিস্টার কেলসাল উনষাট সালের জ্বরে মারা যাওয়ার আগে টাঁকশাল থেকে নিয়ে এসেছিলেন।';
+  const numericDecimalBangla =
+    'তার পাশেই রাখা ছিল পিতলের গজটা—ভেতরের দুই চোয়ালের মাঝখানে ৭.৯২ ইঞ্চির ব্যবধান—যা বৃদ্ধ মিস্টার কেলসাল উনষাট সালের জ্বরে মারা যাওয়ার আগে টাঁকশাল থেকে নিয়ে এসেছিলেন।';
+
+  for (const validBangla of [
+    decimalWordsBangla,
+    fractionalWordsBangla,
+    numericDecimalBangla,
+  ]) {
+    const res = lintParagraphNumericalConsistency({
+      index: 1,
+      englishText: story04P02English,
+      banglaText: validBangla,
+    });
+    assert.equal(
+      res.confirmedMismatches.length,
+      0,
+      `Expected 0 mismatches for valid rendering: ${validBangla}`
+    );
+    assert.equal(res.issues.length, 0);
+    assert.equal(res.matchedComparisons.length, 2);
+  }
+
+  // Verify Stage 3 prompt injection includes [MEASUREMENT & FRACTION PRECISION RULE] when chunk has fractional measurement
+  let capturedStage3Prompt = '';
+  await translateChunkFaithfully({
+    paragraphs: [story04P02English],
+    previousContextParagraphs: [],
+    styleProfile: null,
+    storyContext: null,
+    characters: [],
+    terminology: [],
+    styleControls: {
+      preserveAuthorStyle: true,
+      naturalness: 'highly_natural',
+      literaryExpression: 'balanced',
+      languageComplexity: 'moderate',
+      dialogueStyle: 'more_conversational',
+      translationApproach: 'faithful_literary',
+    },
+    chunkExecutor: async ({ prompt }) => {
+      capturedStage3Prompt = prompt;
+      return {
+        translatedParagraphs: [fractionalWordsBangla],
+      };
+    },
+  });
+  assert.ok(
+    capturedStage3Prompt.includes('[MEASUREMENT & FRACTION PRECISION RULE]')
+  );
+});
+
